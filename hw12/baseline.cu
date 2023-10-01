@@ -205,32 +205,6 @@ void poolReluConv1(std::vector<float> input, int inputRowSize, int inputColSize,
     // printTensor(output, 12, 12, 6);
 
 }
-void poolReluConv2(std::vector<float> input, int inputRowSize, int inputColSize, \
-    std::vector<float> kernelWeight, int inputChannel, int outputChannel, int kernelConv1Size, \
-    std::vector<float> kernelConv1Bias, int kernelMaxPoolSize, \
-    std::vector<float>& output)
-{
-    std::vector<float> outputTmp((inputRowSize - kernelConv1Size + 1) * (inputRowSize - kernelConv1Size + 1) * outputChannel, 0);
-    conv2d(input, inputRowSize, inputColSize, inputChannel, \
-        kernelWeight, kernelConv1Bias, kernelConv1Size, kernelConv1Size, \
-        outputTmp, inputRowSize - kernelConv1Size + 1, inputColSize - kernelConv1Size + 1, outputChannel);
-
-    inputRowSize = inputRowSize - kernelConv1Size + 1;
-    inputColSize = inputColSize - kernelConv1Size + 1;
-    int outputRowSize = inputRowSize / kernelMaxPoolSize;
-    int outputColSize = inputColSize / kernelMaxPoolSize;
-    outputChannel = outputChannel;
-    inputChannel = outputChannel;
-    // printf("inputRow %d inputCol %d, inputChanel %d,outputRow %d, col %d, chan %d,  ", \
-    //     inputRowSize, inputColSize, inputChannel, outputRowSize, outputColSize, outputChannel);
-        // printTensor(outputTmp, 8, 8, 16);
-    reluMaxPool(outputTmp, inputRowSize, inputColSize, inputChannel, \
-        kernelMaxPoolSize, kernelMaxPoolSize, \
-        output, outputRowSize, outputColSize, outputChannel);
-    // printTensor(output, 4, 4, 16);
-
-}
-
 
 void reluSPMV(std::vector<float> input, int inputRowSize, \
     std::vector<float> kernel, int kernelRowSize, int kernelColSize, \
@@ -358,7 +332,7 @@ int main(int argc, char* argv[]) {
         // printf("output1\n");
         // printTensor(output1, 12, 12, 6);
 
-        poolReluConv2(output1, 12, 12, \
+        poolReluConv1(output1, 12, 12, \
             conv2_weight, 6, 16, 5, \
             conv2_bias, 2, \
             output2);
