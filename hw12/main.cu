@@ -12,7 +12,7 @@
 std::vector<std::vector<float>> read_mnist_images(const std::string& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
-        std::cout << "Cannot open file!" << std::endl;
+        std::cout << "Cannot open file!" << path << std::endl;
         return {};
     }
 
@@ -50,7 +50,7 @@ std::vector<std::vector<float>> read_mnist_images(const std::string& path) {
 std::vector<int> read_mnist_labels(const std::string& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
-        std::cout << "Cannot open file!" << std::endl;
+        std::cout << "Cannot open file!" << path << std::endl;
         return {};
     }
 
@@ -98,10 +98,11 @@ int main(int argc, char* argv[]) {
     // cout << dir;
 
     // 读取测试集，对于想实现CUDA C/C++训练的同学，参考训练集文件名为train-images-idx3-ubyte和train-labels-idx1-ubyte
-    auto images = read_mnist_images(dir + "/../../data/FashionMNIST/raw/t10k-images-idx3-ubyte");
+    auto images = read_mnist_images(dir + "/data/FashionMNIST/raw/t10k-images-idx3-ubyte");
     // 读取测试集标签
-    auto labels = read_mnist_labels(dir + "/../../data/FashionMNIST/raw/t10k-labels-idx1-ubyte");
+    auto labels = read_mnist_labels(dir + "/data/FashionMNIST/raw/t10k-labels-idx1-ubyte");
     // 读取模型参数
+    // std::cout << dir << std::endl;
     auto conv1_weight = read_param(dir + "/conv1.weight.txt");
     auto conv1_bias = read_param(dir + "/conv1.bias.txt");
     auto conv2_weight = read_param(dir + "/conv2.weight.txt");
@@ -114,19 +115,19 @@ int main(int argc, char* argv[]) {
     auto fc3_bias = read_param(dir + "/fc3.bias.txt");
 
     // 打印每一个标签，仅用于调试！
-    /*
-    for (const auto& label : labels) {
-        std::cout << label << " ";
-    }
-    std::cout<<std::endl;
-    */
+    
+    // for (const auto& label : labels) {
+    //     std::cout << label << " ";
+    // }
+    // std::cout<<std::endl;
+    
 
     // 开始计时，使用chrono计时，不支持其它计时方式
     auto start = std::chrono::high_resolution_clock::now();
 
     // 进行推理
-    // std::cout << images.size() << std::endl;
-    // std::cout << images[0].size() << std::endl;
+    std::cout << images.size() << std::endl; // 1w张图
+    std::cout << images[0].size() << std::endl; // 28 * 28 = 784
 
     // 参数加载
     // std::cout << fc3_bias.size() << std::endl;
@@ -135,18 +136,22 @@ int main(int argc, char* argv[]) {
         // TODO ...在这里实现利用CUDA对图片进行深度学习的推理过程，当然，你也可以改进for循环以使用batch推理提速...
 
         // 打印每一张图片，仅用于调试！
-        /*
-        for(int i = 0;i <28; i++)
-        {
-            for(int j = 0; j<28; j++)
-            {
-                std::cout << (float(images[t][i*28 + j])>0.5?1:0);
-            }
-            std::cout << std::endl;
-        }
-        std::cout << std::endl;
-        */
+        
+        // for(int i = 0;i <28; i++)
+        // {
+        //     for(int j = 0; j<28; j++)
+        //     {
+        //         std::cout << (float(images[t][i*28 + j])>0.5?1:0);
+        //     }
+        //     std::cout << std::endl;
+        // }
+        // std::cout << std::endl;
+
+        //conv2d1 input_channal = 1, output_channal = 6, kernel_size = 5 
+        for (int )
+
     }
+
 
     // 向主机端同步以等待所有异步调用的GPU kernel执行完毕，这句必须要有
     cudaDeviceSynchronize();
