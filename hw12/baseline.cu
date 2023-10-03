@@ -6,7 +6,7 @@
 #include <vector>
 #include <chrono>
 #include <iomanip>
-#include <string>
+#include <cuda_runtime.h>
 
 // 读取MNIST数据集
 std::vector<std::vector<float>> read_mnist_images(const std::string& path) {
@@ -41,7 +41,7 @@ std::vector<std::vector<float>> read_mnist_images(const std::string& path) {
             file.read((char*)&pixel, sizeof(pixel));
 
             images[i][j] = static_cast<float>(pixel) / 255.0f;
-            images[i][j] = 2 * images[i][j] - 1;
+            // images[i][j] = 2 * images[i][j] - 1;
             // if (i == 0)
             // {
             //     std::cout << static_cast<float>(pixel) << " ";
@@ -89,6 +89,124 @@ std::vector<float> read_param(const std::string& path) {
         params.push_back(param);
     }
     return params;
+}
+
+#define checkCudaErrors(func)				\
+{									\
+    cudaError_t e = (func);			\
+    if(e != cudaSuccess)						                \
+        printf ("%s %d CUDA: %s\n", __FILE__,  __LINE__, cudaGetErrorString(e));		\
+}
+
+template <unsigned int WarpSize>
+__device__ __forceinline__ float warpReduceSum(float sum) {
+    if (WarpSize >= 32)sum += __shfl_down_sync(0xffffffff, sum, 16); // 0-16, 1-17, 2-18, etc.
+    if (WarpSize >= 16)sum += __shfl_down_sync(0xffffffff, sum, 8);// 0-8, 1-9, 2-10, etc.
+    if (WarpSize >= 8)sum += __shfl_down_sync(0xffffffff, sum, 4);// 0-4, 1-5, 2-6, etc.
+    if (WarpSize >= 4)sum += __shfl_down_sync(0xffffffff, sum, 2);// 0-2, 1-3, 4-6, 5-7, etc.
+    if (WarpSize >= 2)sum += __shfl_down_sync(0xffffffff, sum, 1);// 0-1, 2-3, 4-5, etc.
+    return sum;
+}
+
+// if N>= 128
+__global__ void reluGemv(
+    float* __restrict__ A,
+    float* __restrict__ ABias,
+    float* __restrict__ x,
+    float* __restrict__ y,
+    const int M,
+    const int N) {
+    // Block index
+    int bx = blockIdx.x;
+
+    // Thread index
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+
+    const int warp_size = 32;
+    int laneId = tx % warp_size;
+    int current_row = blockDim.y * bx + ty;
+
+    if (current_row < M) {
+        float res = 0;
+        int kIteration = (N / warp_size) / 4;
+        if (tx == 0) printf("iter : %d, N %d\n", kIteration, N);
+        if (kIteration == 0) kIteration = 1;
+        A = &A[current_row * N];
+#pragma unroll
+        for (int i = 0; i < kIteration; i++) {
+            int current_col_vec = (i * warp_size + laneId);
+            float4 current_val = reinterpret_cast<float4*>(A)[current_col_vec];
+            float4 current_x = reinterpret_cast<float4*>(x)[current_col_vec];
+            res += current_val.x * current_x.x;
+            res += current_val.y * current_x.y;
+            res += current_val.z * current_x.z;
+            res += current_val.w * current_x.w;
+        }
+        res = warpReduceSum<warp_size>(res);
+        if (laneId == 0){
+
+            res += ABias[current_row];
+            if (res >= 0)
+                y[current_row] = res;
+            else
+                y[current_row] = 0;
+        }
+
+
+    }
+}
+
+
+void reluSPMV(std::vector<float> input, int inputRowSize, \
+    std::vector<float> kernel, int kernelRowSize, int kernelColSize, \
+    std::vector<float> kernelBias,\
+    std::vector<float>& output, int outputRowSize)
+{
+    #if 1
+
+    float* d_output, *d_kernel, *d_input, *d_kernelBias;
+    int inputSize = sizeof(float) * inputRowSize, outputSize = sizeof(float) * outputRowSize;
+    int kernelSize = sizeof(float) * kernelRowSize * kernelColSize, kernelBiasSize = kernelRowSize * sizeof(float);
+//malloc
+    checkCudaErrors(cudaMalloc(&d_output, outputSize));
+    checkCudaErrors(cudaMalloc(&d_kernel,kernelSize));
+    checkCudaErrors(cudaMalloc(&d_input, inputSize));
+    checkCudaErrors(cudaMalloc(&d_kernelBias, kernelBiasSize));
+
+    //memcpy H2D
+    checkCudaErrors(cudaMemcpy(d_input, input.data(), inputSize, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_kernel, kernel.data(), kernelSize, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_kernelBias, kernelBias.data(), kernelBiasSize, cudaMemcpyHostToDevice));
+
+    //call cudakernel M row, N col
+    dim3 dimGrid((kernelRowSize + 3) / 4);
+    dim3 dimBlock(32, 4);
+    reluGemv<< < dimGrid, dimBlock >> > (d_kernel, d_kernelBias, d_input, d_output, kernelRowSize, kernelColSize);
+
+    //memcpy D2H
+    checkCudaErrors(cudaMemcpy(output.data(), d_output, outputSize, cudaMemcpyDeviceToHost));
+    
+    //cudaFree
+    cudaFree(d_output);
+    cudaFree(d_input);
+    cudaFree(d_kernel);
+    cudaFree(d_kernelBias);
+
+    
+    
+#else
+    for (int i = 0; i < outputRowSize; i++)
+    {
+            double tmp = 0;
+            for (int k = 0; k < inputRowSize; k++)
+                tmp += kernel[i * kernelColSize + k] * input[k];
+            tmp += kernelBias[i];
+            if (tmp >= 0) output[i] = tmp;
+            else output[i] = 0;
+            
+    }
+#endif
 }
 
 // 范例kernel函数，无实际作用
@@ -206,24 +324,6 @@ void poolReluConv1(std::vector<float> input, int inputRowSize, int inputColSize,
 
 }
 
-void reluSPMV(std::vector<float> input, int inputRowSize, \
-    std::vector<float> kernel, int kernelRowSize, int kernelColSize, \
-    std::vector<float> kernelBias,\
-    std::vector<float>& output, int outputRowSize)
-{
-    
-    for (int i = 0; i < outputRowSize; i++)
-    {
-            double tmp = 0;
-            for (int k = 0; k < inputRowSize; k++)
-                tmp += kernel[i * kernelColSize + k] * input[k];
-            tmp += kernelBias[i];
-            if (tmp >= 0) output[i] = tmp;
-            else output[i] = 0;
-            
-    }
-    
-}
 int maxT(std::vector<float> A)
 {
     int tmp = A[0], idx = 0;
@@ -256,26 +356,26 @@ int main(int argc, char* argv[]) {
     auto labels = read_mnist_labels(dir + "/data/FashionMNIST/raw/t10k-labels-idx1-ubyte");
     // 读取模型参数
     // // std::cout << dir << std::endl;
-    // auto conv1_weight = read_param(dir + "/conv1.weight_epoch400.txt");
-    // auto conv1_bias = read_param(dir + "/conv1.bias_epoch400.txt");
-    // auto conv2_weight = read_param(dir + "/conv2.weight_epoch400.txt");
-    // auto conv2_bias = read_param(dir + "/conv2.bias_epoch400.txt");
-    // auto fc1_weight = read_param(dir + "/fc1.weight_epoch400.txt");
-    // auto fc1_bias = read_param(dir + "/fc1.bias_epoch400.txt");
-    // auto fc2_weight = read_param(dir + "/fc2.weight_epoch400.txt");
-    // auto fc2_bias = read_param(dir + "/fc2.bias_epoch400.txt");
-    // auto fc3_weight = read_param(dir + "/fc3.weight_epoch400.txt");
-    // auto fc3_bias = read_param(dir + "/fc3.bias_epoch400.txt");
-    auto conv1_weight = read_param(dir + "/conv1.weight.txt");
-    auto conv1_bias = read_param(dir + "/conv1.bias.txt");
-    auto conv2_weight = read_param(dir + "/conv2.weight.txt");
-    auto conv2_bias = read_param(dir + "/conv2.bias.txt");
-    auto fc1_weight = read_param(dir + "/fc1.weight.txt");
-    auto fc1_bias = read_param(dir + "/fc1.bias.txt");
-    auto fc2_weight = read_param(dir + "/fc2.weight.txt");
-    auto fc2_bias = read_param(dir + "/fc2.bias.txt");
-    auto fc3_weight = read_param(dir + "/fc3.weight.txt");
-    auto fc3_bias = read_param(dir + "/fc3.bias.txt");
+    auto conv1_weight = read_param(dir + "/conv1.weight_epoch400.txt");
+    auto conv1_bias = read_param(dir + "/conv1.bias_epoch400.txt");
+    auto conv2_weight = read_param(dir + "/conv2.weight_epoch400.txt");
+    auto conv2_bias = read_param(dir + "/conv2.bias_epoch400.txt");
+    auto fc1_weight = read_param(dir + "/fc1.weight_epoch400.txt");
+    auto fc1_bias = read_param(dir + "/fc1.bias_epoch400.txt");
+    auto fc2_weight = read_param(dir + "/fc2.weight_epoch400.txt");
+    auto fc2_bias = read_param(dir + "/fc2.bias_epoch400.txt");
+    auto fc3_weight = read_param(dir + "/fc3.weight_epoch400.txt");
+    auto fc3_bias = read_param(dir + "/fc3.bias_epoch400.txt");
+    // auto conv1_weight = read_param("//share/home/wanghongyu/Courses/UCAS-GPU/ensemble/models.9.conv1.0.weight_96.4.txt");
+    // auto conv1_bias = read_param("/share/home/wanghongyu/Courses/UCAS-GPU/ensemble/models.9.conv1.0.bias_96.4.txt");
+    // auto conv2_weight = read_param("/share/home/wanghongyu/Courses/UCAS-GPU/ensemble/models.9.conv2.0.weight_96.4.txt");
+    // auto conv2_bias = read_param("/share/home/wanghongyu/Courses/UCAS-GPU/ensemble/models.9.conv2.0.bias_96.4.txt");
+    // auto fc1_weight = read_param("/share/home/wanghongyu/Courses/UCAS-GPU/ensemble/models.9.fc1.0.weight_96.4.txt");
+    // auto fc1_bias = read_param("/share/home/wanghongyu/Courses/UCAS-GPU/ensemble/models.9.fc1.0.bias_96.4.txt");
+    // auto fc2_weight = read_param("/share/home/wanghongyu/Courses/UCAS-GPU/ensemble/models.9.fc2.0.weight_96.4.txt");
+    // auto fc2_bias = read_param("/share/home/wanghongyu/Courses/UCAS-GPU/ensemble/models.9.fc2.0.bias_96.4.txt");
+    // auto fc3_weight = read_param("/share/home/wanghongyu/Courses/UCAS-GPU/ensemble/models.9.classifier.weight_96.4.txt");
+    // auto fc3_bias = read_param("/share/home/wanghongyu/Courses/UCAS-GPU/ensemble/models.9.classifier.bias_96.4.txt");
 
     // 打印每一个标签，仅用于调试！
     
@@ -324,95 +424,94 @@ int main(int argc, char* argv[]) {
         // printf("input:\n");
         // printTensor(input, 28, 28, 1);
 
-        poolReluConv1(images[t], 28, 28, \
-            conv1_weight, 1, 6, 5, \
-            conv1_bias, 2, \
-            output1);
+        // poolReluConv1(images[t], 28, 28, \
+        //     conv1_weight, 1, 6, 5, \
+        //     conv1_bias, 2, \
+        //     output1);
 
-        // printf("output1\n");
-        // printTensor(output1, 12, 12, 6);
+        // // printf("output1\n");
+        // // printTensor(output1, 12, 12, 6);
 
-        poolReluConv1(output1, 12, 12, \
-            conv2_weight, 6, 16, 5, \
-            conv2_bias, 2, \
-            output2);
+        // poolReluConv1(output1, 12, 12, \
+        //     conv2_weight, 6, 16, 5, \
+        //     conv2_bias, 2, \
+        //     output2);
 
-        // printf("output2\n");
-        // printTensor(output2, 4, 4, 16);
+        // // printf("output2\n");
+        // // printTensor(output2, 4, 4, 16);
 
-        reluSPMV(output2, 256, \
-            fc1_weight, 120, 256, \
-            fc1_bias, \
-            output3, 120);
+        // reluSPMV(output2, 256, \
+        //     fc1_weight, 120, 256, \
+        //     fc1_bias, \
+        //     output3, 120);
 
-        // printf("output3\n");
-        // printTensor(output3, 120, 1, 1);
+        // // printf("output3\n");
+        // // printTensor(output3, 120, 1, 1);
 
-        reluSPMV(output3, 120, \
-            fc2_weight, 84, 120, \
-            fc2_bias, \
-            output4, 84);
-        // printf("output4\n");
-        // printTensor(output4, 84, 1, 1);
+        // reluSPMV(output3, 120, \
+        //     fc2_weight, 84, 120, \
+        //     fc2_bias, \
+        //     output4, 84);
+        // // printf("output4\n");
+        // // printTensor(output4, 84, 1, 1);
 
-        reluSPMV(output4, 84, \
-            fc3_weight, 10, 84, \
-            fc3_bias, \
-            output5, 10);
-        // printf("output5\n");
-        // printTensor(output5, 10, 1, 1);
+        // reluSPMV(output4, 84, \
+        //     fc3_weight, 10, 84, \
+        //     fc3_bias, \
+        //     output5, 10);
+        // // printf("output5\n");
+        // // printTensor(output5, 10, 1, 1);
 
-        if (labels[t] == maxT(output5))
-            sum++;
+        // if (labels[t] == maxT(output5))
+        //     sum++;
         // std::cout << "real: " << labels[t]<< ", predict : "<<  maxT(output5) << std::endl;
     }
 
-    // std::vector<float> output1(6 * 24 * 24, 0);
-    // std::vector<float> output2(6 * 24 * 24, 0);
-    // std::vector<float> output3(120, 0);
-    // std::vector<float> output4(84, 0);
-    // std::vector<float> output5(10, 0);
-    // std::vector<float> input(28 * 28, 0);
-    // init_ij(input, 28, 28, 1);
-    // printf("input:\n");
-    // printTensor(images[0], 28, 28, 1);
-    // poolReluConv1(images[0], 28, 28, \
-    //     conv1_weight, 1, 6, 5, \
-    //     conv1_bias, 2, \
-    //     output1);
+    std::vector<float> output1(6 * 24 * 24, 0);
+    std::vector<float> output2(6 * 24 * 24, 0);
+    std::vector<float> output3(120, 0);
+    std::vector<float> output4(84, 0);
+    std::vector<float> output5(10, 0);
+    std::vector<float> input(28 * 28, 0);
+    init_ij(input, 28, 28, 1);
+    printf("input:\n");
+    printTensor(input, 28, 28, 1);
+    poolReluConv1(input, 28, 28, \
+        conv1_weight, 1, 6, 5, \
+        conv1_bias, 2, \
+        output1);
 
-    // printf("output1\n");
-    // printTensor(output1, 12, 12, 6);
+    printf("output1\n");
+    printTensor(output1, 12, 12, 6);
 
-    // poolReluConv2(output1, 12, 12, \
-    //     conv2_weight, 6, 16, 5, \
-    //     conv2_bias, 2, \
-    //     output2);
+    poolReluConv1(output1, 12, 12, \
+        conv2_weight, 6, 16, 5, \
+        conv2_bias, 2, \
+        output2);
 
-    // printf("output2\n");
-    // printTensor(output2, 4, 4, 16);
-
-    // reluSPMV(output2, 256, \
-    //     fc1_weight, 120, 256, \
-    //     fc1_bias, \
-    //     output3, 120);
+    printf("output2\n");
+    printTensor(output2, 4, 4, 16);
+    reluSPMV(output2, 256, \
+        fc1_weight, 120, 256, \
+        fc1_bias, \
+        output3, 120);
     
-    // printf("output3\n");
-    // printTensor(output3, 120, 1, 1);
+    printf("output3\n");
+    printTensor(output3, 120, 1, 1);
 
-    // reluSPMV(output3, 120, \
-    //     fc2_weight, 84, 120, \
-    //     fc2_bias, \
-    //     output4, 84);
-    // printf("output4\n");
-    // printTensor(output4, 84, 1, 1);
+    reluSPMV(output3, 120, \
+        fc2_weight, 84, 120, \
+        fc2_bias, \
+        output4, 84);
+    printf("output4\n");
+    printTensor(output4, 84, 1, 1);
 
-    // reluSPMV(output4, 84, \
-    //     fc3_weight, 10, 84, \
-    //     fc3_bias, \
-    //     output5, 10);
-    // printf("output5\n");
-    // printTensor(output5, 10, 1, 1);
+    reluSPMV(output4, 84, \
+        fc3_weight, 10, 84, \
+        fc3_bias, \
+        output5, 10);
+    printf("output5\n");
+    printTensor(output5, 10, 1, 1);
 
     
     // printf("\noutput2:\n");
