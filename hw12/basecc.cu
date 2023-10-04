@@ -257,7 +257,8 @@ void reluMaxPool(float* d_input, int inputRowSize, int inputColSize, int inputCh
         2);
     cudaError_t cudaError = cudaGetLastError();
     if (cudaError != cudaSuccess) {
-        fprintf(stderr, "CUDA error111: %s\n", cudaGetErrorString(cudaError));
+        
+        fprintf(stderr, "CUDA error111: %s %d\n", cudaGetErrorString(cudaError), inputRowSize);
         // 处理错误
     }
     else {
@@ -655,25 +656,25 @@ void conv2d_fusion(std::vector<float> input, int inputRowSize, int inputColSize,
 }
 
 void conv2d(float*  d_input, int inputRowSize, int inputColSize, int inputChannel, \
-    std::vector<float>  kernel, std::vector<float> kernelBias, int kernelRowSize, int kernelColSize, \
+    float*  d_kernel, float* d_kernelBias, int kernelRowSize, int kernelColSize, \
     float* d_output, int outputRowSize, int outputColSize, int outputChannel)
 {
 #if 1
-    float * d_kernel, *d_kernelBias;
-    int inputSize = inputChannel * inputRowSize * inputColSize * sizeof(float);
-    int outputSize = outputChannel * outputRowSize * outputRowSize * sizeof(float);
-    int kernelSize = kernelRowSize * kernelColSize * inputChannel * outputChannel * sizeof(float);
-    int kernelBiasSize = outputChannel * sizeof(float);
+    // float * d_kernel, *d_kernelBias;
+    // int inputSize = inputChannel * inputRowSize * inputColSize * sizeof(float);
+    // int outputSize = outputChannel * outputRowSize * outputRowSize * sizeof(float);
+    // int kernelSize = kernelRowSize * kernelColSize * inputChannel * outputChannel * sizeof(float);
+    // int kernelBiasSize = outputChannel * sizeof(float);
     dim3 dimGrid(outputColSize / BLOCK_WIDTH, outputRowSize / BLOCK_HEIGHT);
     dim3 dimBlock(BLOCK_WIDTH / THREAD_WIDTH, BLOCK_HEIGHT / THREAD_HEIGHT);
     // checkCudaErrors(cudaMalloc(&d_input, inputSize));
     // checkCudaErrors(cudaMalloc(&d_output, outputSize));
-    checkCudaErrors(cudaMalloc(&d_kernel, kernelSize));
-    checkCudaErrors(cudaMalloc(&d_kernelBias, kernelBiasSize));
+    // checkCudaErrors(cudaMalloc(&d_kernel, kernelSize));
+    // checkCudaErrors(cudaMalloc(&d_kernelBias, kernelBiasSize));
     
     // checkCudaErrors(cudaMemcpy(d_input, input.data(), inputSize, cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_kernel, kernel.data(), kernelSize, cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_kernelBias, kernelBias.data(), kernelBiasSize, cudaMemcpyHostToDevice));
+    // checkCudaErrors(cudaMemcpy(d_kernel, kernel.data(), kernelSize, cudaMemcpyHostToDevice));
+    // checkCudaErrors(cudaMemcpy(d_kernelBias, kernelBias.data(), kernelBiasSize, cudaMemcpyHostToDevice));
 
     v1_convolution<BLOCK_HEIGHT, BLOCK_WIDTH, KERNEL_HEIGHT, KERNEL_WIDTH, MALLOC_TEMP_SIZE,
         MALLOC_KERNEL_HEIGHT, MALLOC_KERNEL_WIDTH, MALLOC_BLOCK_HEIGHT, MALLOC_BLOCK_WIDTH>
@@ -685,8 +686,8 @@ void conv2d(float*  d_input, int inputRowSize, int inputColSize, int inputChanne
     //free
     // checkCudaErrors(cudaFree(d_input));
     // checkCudaErrors(cudaFree(d_output));
-    checkCudaErrors(cudaFree(d_kernel));
-    checkCudaErrors(cudaFree(d_kernelBias));
+    // checkCudaErrors(cudaFree(d_kernel));
+    // checkCudaErrors(cudaFree(d_kernelBias));
 #else
 
     for (int c = 0; c < outputChannel; c++)
@@ -828,8 +829,8 @@ void printTensor(std::vector<float> A, int rowS, int colS, int chaS)
 
 }
 void poolReluConv1(float* input, int inputRowSize, int inputColSize, \
-    std::vector<float> kernelWeight, int inputChannel, int outputChannel, int kernelConv1Size, \
-    std::vector<float> kernelConv1Bias, int kernelMaxPoolSize, \
+    float* kernelWeight, int inputChannel, int outputChannel, int kernelConv1Size, \
+    float* kernelConv1Bias, int kernelMaxPoolSize, \
     float* output, int outputRowSize, int outputColSize)
 {
     // std::vector<float> outputTmp((inputRowSize - kernelConv1Size + 1) * (inputRowSize - kernelConv1Size + 1) * outputChannel, 0);
@@ -1106,6 +1107,12 @@ int main(int argc, char* argv[]) {
 #if 1
     // std::vector<float> output1(6 * 24 * 24, 0);
     float* d_output1, *d_output2, *d_output3, *d_output4, *d_output5, *d_input;
+    float* d_conv1_weight, *d_conv1_bias, *d_conv2_weight, *d_conv2_bias, *d_fc1_weight,
+        *d_fc1_bias, *d_fc2_weight, *d_fc2_bias, *d_fc3_weight, *d_fc3_bias;
+    cudaMalloc(&d_conv1_weight, conv1_weight.size() * sizeof(float));
+    cudaMalloc(&d_conv1_bias, conv1_bias.size() * sizeof(float));
+    cudaMalloc(&d_conv2_weight, conv2_weight.size() * sizeof(float));
+    cudaMalloc(&d_conv2_bias, conv2_bias.size() * sizeof(float));
     cudaMalloc(&d_input, 1 * 28 * 28 * sizeof(float));
     cudaMalloc(&d_output1, 6 * 24 * 24 * sizeof(float));
     cudaMalloc(&d_output2, 6 * 24 * 24 * sizeof(float));
@@ -1120,19 +1127,23 @@ int main(int argc, char* argv[]) {
     init_ij(input, 28, 28, 1);
     cudaMemcpy(d_input, input.data(), sizeof(float) * 28 * 28, cudaMemcpyHostToDevice);
 
+    cudaMemcpy(d_conv1_weight, conv1_weight.data(), sizeof(float) * conv1_weight.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_conv1_bias, conv1_bias.data(), sizeof(float) * conv1_bias.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_conv2_weight, conv2_weight.data(), sizeof(float) * conv2_weight.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_conv2_bias, conv2_bias.data(), sizeof(float) * conv2_bias.size(), cudaMemcpyHostToDevice);
     printf("input:\n");
     printTensor(input, 28, 28, 1);
     poolReluConv1(d_input, 28, 28, \
-        conv1_weight, 1, 6, 5, \
-        conv1_bias, 2, \
+        d_conv1_weight, 1, 6, 5, \
+        d_conv1_bias, 2, \
         d_output1, 12, 12);
 
     // printf("--------------output1--------------\n");
     // printTensor(output1, 12, 12, 6);
 
     poolReluConv1(d_output1, 12, 12, \
-        conv2_weight, 6, 16, 5, \
-        conv2_bias, 2, \
+        d_conv2_weight, 6, 16, 5, \
+        d_conv2_bias, 2, \
         d_output2, 4, 4);
     // cudaMemcpy(output2.data(), d_output2, sizeof(float) * 6 * 24 * 24, cudaMemcpyDeviceToHost);
 
@@ -1165,8 +1176,18 @@ int main(int argc, char* argv[]) {
     printTensor(output5, 10, 1, 1);
 
 
-    printf("\noutput2:\n");
-    printTensor(output5, 10, 1, 1);
+    // printf("\noutput2:\n");
+    // printTensor(output5, 10, 1, 1);
+    cudaFree(d_conv1_weight);
+    cudaFree(d_conv1_bias);
+    cudaFree(d_conv2_weight);
+    cudaFree(d_conv2_bias);
+    cudaFree(d_input);
+    cudaFree(d_output1);
+    cudaFree(d_output2);
+    cudaFree(d_output3);
+    cudaFree(d_output4);
+    cudaFree(d_output5);
     // 向主机端同步以等待所有异步调用的GPU kernel执行完毕，这句必须要有
     cudaDeviceSynchronize();
 #endif
