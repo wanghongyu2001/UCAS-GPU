@@ -831,11 +831,11 @@ void printTensor(std::vector<float> A, int rowS, int colS, int chaS)
 void poolReluConv1(float* input, int inputRowSize, int inputColSize, \
     float* kernelWeight, int inputChannel, int outputChannel, int kernelConv1Size, \
     float* kernelConv1Bias, int kernelMaxPoolSize, \
-    float* output, int outputRowSize, int outputColSize)
+    float* output, int outputRowSize, int outputColSize, float* outputTmp)
 {
     // std::vector<float> outputTmp((inputRowSize - kernelConv1Size + 1) * (inputRowSize - kernelConv1Size + 1) * outputChannel, 0);
-    float* outputTmp;
-    cudaMalloc(&outputTmp, sizeof(float) * (inputRowSize - kernelConv1Size + 1) * (inputRowSize - kernelConv1Size + 1) * outputChannel);
+    // float* outputTmp;
+    // cudaMalloc(&outputTmp, sizeof(float) * (inputRowSize - kernelConv1Size + 1) * (inputRowSize - kernelConv1Size + 1) * outputChannel);
     conv2d(input, inputRowSize, inputColSize, inputChannel, \
         kernelWeight, kernelConv1Bias, kernelConv1Size, kernelConv1Size, \
         outputTmp, inputRowSize - kernelConv1Size + 1, inputColSize - kernelConv1Size + 1, outputChannel);
@@ -850,7 +850,7 @@ void poolReluConv1(float* input, int inputRowSize, int inputColSize, \
     reluMaxPool(outputTmp, inputRowSize, inputColSize, inputChannel, \
         kernelMaxPoolSize, kernelMaxPoolSize, \
         output, outputRowSize, outputColSize, outputChannel);
-    cudaFree(outputTmp);
+    // cudaFree(outputTmp);
     // printTensor(output, 12, 12, 6);
 
 }
@@ -1029,86 +1029,12 @@ int main(int argc, char* argv[]) {
 
     // 参数加载
     // std::cout << fc3_bias.size() << std::endl;
-    int sum = 0;
-    for (int t = 0; t < images.size(); t++) {
-        // TODO ...在这里实现利用CUDA对图片进行深度学习的推理过程，当然，你也可以改进for循环以使用batch推理提速...
-
-        // 打印每一张图片，仅用于调试！
-
-        // for(int i = 0;i <28; i++)
-        // {
-        //     for(int j = 0; j<28; j++)
-        //     {
-        //         std::cout << images[t][i*28 + j] << " ";
-        //     }
-        //     std::cout << std::endl;
-        // }
-        // std::cout << std::endl;
-        //conv2d1 input_channal = 1, output_channal = 6, kernel_size = 5 
-        // TODO : 对每一个images[t]进行推理，这个是28*28的矩阵
-
-        // x = self.pool(F.relu(self.conv1(x))), x = images[t] conv1 = nn.Conv2d(1, 6, 5)
-        //pool = nn.MaxPool2d(2, 2)
-#if 0
-        std::vector<float> output1(6 * 24 * 24, 0);
-        std::vector<float> output2(6 * 24 * 24, 0);
-        std::vector<float> output3(120, 0);
-        std::vector<float> output4(84, 0);
-        std::vector<float> output5(10, 0);
-        // std::vector<float> input(28 * 28, 0);
-        // init_ij(input, 28, 28, 1);
-        // printf("input:\n");
-        // printTensor(input, 28, 28, 1);
-
-        poolReluConv1(images[t], 28, 28, \
-            conv1_weight, 1, 6, 5, \
-            conv1_bias, 2, \
-            output1);
-
-        // printf("poolReluConv1output1\n");
-        // printTensor(output1, 12, 12, 6);
-
-        poolReluConv1(output1, 12, 12, \
-            conv2_weight, 6, 16, 5, \
-            conv2_bias, 2, \
-            output2);
-
-        // printf("poolReluConv1output2\n");
-        // printTensor(output2, 4, 4, 16);
-
-        reluSPMV(output2, 256, \
-            fc1_weight, 120, 256, \
-            fc1_bias, \
-            output3, 120);
-
-        // printf("output3\n");
-        // printTensor(output3, 120, 1, 1);
-
-        reluSPMV(output3, 120, \
-            fc2_weight, 84, 120, \
-            fc2_bias, \
-            output4, 84);
-        // printf("output4\n");
-        // printTensor(output4, 84, 1, 1);
-
-        reluSPMV(output4, 84, \
-            fc3_weight, 10, 84, \
-            fc3_bias, \
-            output5, 10);
-        // printf("output5\n");
-        // printTensor(output5, 10, 1, 1);
-
-        if (labels[t] == maxT(output5))
-            sum++;
-#endif
-        // std::cout << "real: " << labels[t]<< ", predict : "<<  maxT(output5) << std::endl;
-    }
-
-#if 1
-    // std::vector<float> output1(6 * 24 * 24, 0);
+        // std::vector<float> output1(6 * 24 * 24, 0);
     float* d_output1, *d_output2, *d_output3, *d_output4, *d_output5, *d_input;
     float* d_conv1_weight, *d_conv1_bias, *d_conv2_weight, *d_conv2_bias, *d_fc1_weight,
         *d_fc1_bias, *d_fc2_weight, *d_fc2_bias, *d_fc3_weight, *d_fc3_bias;
+    float* outputTmp;
+    cudaMalloc(&outputTmp, sizeof(float) * (24) * (24) * 16);
     cudaMalloc(&d_conv1_weight, conv1_weight.size() * sizeof(float));
     cudaMalloc(&d_conv1_bias, conv1_bias.size() * sizeof(float));
     cudaMalloc(&d_conv2_weight, conv2_weight.size() * sizeof(float));
@@ -1130,8 +1056,7 @@ int main(int argc, char* argv[]) {
     std::vector<float> output4(84, 0);
     std::vector<float> output5(10, 0);
     std::vector<float> input(28 * 28, 0);
-    init_ij(input, 28, 28, 1);
-    cudaMemcpy(d_input, input.data(), sizeof(float) * 28 * 28, cudaMemcpyHostToDevice);
+    // init_ij(input, 28, 28, 1);
 
     cudaMemcpy(d_conv1_weight, conv1_weight.data(), sizeof(float) * conv1_weight.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_conv1_bias, conv1_bias.data(), sizeof(float) * conv1_bias.size(), cudaMemcpyHostToDevice);
@@ -1143,12 +1068,37 @@ int main(int argc, char* argv[]) {
     cudaMemcpy(d_fc1_bias, fc1_bias.data(), sizeof(float) * fc1_bias.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_fc2_bias, fc2_bias.data(), sizeof(float) * fc2_bias.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_fc3_bias, fc3_bias.data(), sizeof(float) * fc3_bias.size(), cudaMemcpyHostToDevice);
-    printf("input:\n");
-    printTensor(input, 28, 28, 1);
+    int sum = 0;
+    for (int t = 0; t < images.size(); t++) {
+        // TODO ...在这里实现利用CUDA对图片进行深度学习的推理过程，当然，你也可以改进for循环以使用batch推理提速...
+
+        // 打印每一张图片，仅用于调试！
+
+        // for(int i = 0;i <28; i++)
+        // {
+        //     for(int j = 0; j<28; j++)
+        //     {
+        //         std::cout << images[t][i*28 + j] << " ";
+        //     }
+        //     std::cout << std::endl;
+        // }
+        // std::cout << std::endl;
+        //conv2d1 input_channal = 1, output_channal = 6, kernel_size = 5 
+        // TODO : 对每一个images[t]进行推理，这个是28*28的矩阵
+
+        // x = self.pool(F.relu(self.conv1(x))), x = images[t] conv1 = nn.Conv2d(1, 6, 5)
+        //pool = nn.MaxPool2d(2, 2)
+#if 1
+
+    // printf("input:\n");
+    // printTensor(input, 28, 28, 1);
+    cudaMemcpy(d_input, images[t].data(), sizeof(float) * 28 * 28, cudaMemcpyHostToDevice);
+
     poolReluConv1(d_input, 28, 28, \
         d_conv1_weight, 1, 6, 5, \
         d_conv1_bias, 2, \
-        d_output1, 12, 12);
+        d_output1, 12, 12,
+        outputTmp);
 
     // printf("--------------output1--------------\n");
     // printTensor(output1, 12, 12, 6);
@@ -1156,7 +1106,67 @@ int main(int argc, char* argv[]) {
     poolReluConv1(d_output1, 12, 12, \
         d_conv2_weight, 6, 16, 5, \
         d_conv2_bias, 2, \
-        d_output2, 4, 4);
+        d_output2, 4, 4,
+        outputTmp);
+    // cudaMemcpy(output2.data(), d_output2, sizeof(float) * 6 * 24 * 24, cudaMemcpyDeviceToHost);
+
+    // printf("output2\n");
+    // printTensor(output2, 4, 4, 16);
+
+    reluSPMV(d_output2, 256, \
+        d_fc1_weight, 120, 256, \
+        d_fc1_bias, \
+        d_output3, 120);
+
+    // printf("output3\n");
+    // printTensor(output3, 120, 1, 1);
+
+    reluSPMV(d_output3, 120, \
+        d_fc2_weight, 84, 120, \
+        d_fc2_bias, \
+        d_output4, 84);
+    // printf("output4\n");
+    // printTensor(output4, 84, 1, 1);
+
+    reluSPMV(d_output4, 84, \
+        d_fc3_weight, 10, 84, \
+        d_fc3_bias, \
+        d_output5, 10);
+    
+    cudaMemcpy(output5.data(), d_output5, sizeof(float) *10, cudaMemcpyDeviceToHost);
+
+    // printf("output5\n");
+    // printTensor(output5, 10, 1, 1);
+
+
+    // printf("\noutput2:\n");
+    // printTensor(output5, 10, 1, 1);
+
+        
+        if (labels[t] == maxT(output5))
+            sum++;
+#endif
+        // std::cout << "real: " << labels[t]<< ", predict : "<<  maxT(output5) << std::endl;
+    }
+
+#if 0
+    
+    printf("input:\n");
+    printTensor(input, 28, 28, 1);
+    poolReluConv1(d_input, 28, 28, \
+        d_conv1_weight, 1, 6, 5, \
+        d_conv1_bias, 2, \
+        d_output1, 12, 12, 
+        outputTmp);
+
+    // printf("--------------output1--------------\n");
+    // printTensor(output1, 12, 12, 6);
+
+    poolReluConv1(d_output1, 12, 12, \
+        d_conv2_weight, 6, 16, 5, \
+        d_conv2_bias, 2, \
+        d_output2, 4, 4,
+        outputTmp);
     // cudaMemcpy(output2.data(), d_output2, sizeof(float) * 6 * 24 * 24, cudaMemcpyDeviceToHost);
 
     // printf("output2\n");
@@ -1190,6 +1200,9 @@ int main(int argc, char* argv[]) {
 
     // printf("\noutput2:\n");
     // printTensor(output5, 10, 1, 1);
+
+
+#endif
     cudaFree(d_conv1_weight);
     cudaFree(d_conv1_bias);
     cudaFree(d_conv2_weight);
@@ -1200,9 +1213,15 @@ int main(int argc, char* argv[]) {
     cudaFree(d_output3);
     cudaFree(d_output4);
     cudaFree(d_output5);
+    cudaFree(d_fc1_weight);
+    cudaFree(d_fc1_bias);
+    cudaFree(d_fc2_weight);
+    cudaFree(d_fc2_bias);
+    cudaFree(d_fc3_weight);
+    cudaFree(d_fc3_bias);
+    cudaFree(outputTmp);
     // 向主机端同步以等待所有异步调用的GPU kernel执行完毕，这句必须要有
     cudaDeviceSynchronize();
-#endif
     // 结束计时
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> diff = end - start;
