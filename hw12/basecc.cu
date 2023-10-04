@@ -907,24 +907,24 @@ __global__ void reluGemv( float* __restrict__ A, float* __restrict__ ABias, floa
 }
 
 
-void reluSPMV(std::vector<float> input, int inputRowSize, \
+void reluSPMV(float* d_input, int inputRowSize, \
     std::vector<float> kernel, int kernelRowSize, int kernelColSize, \
     std::vector<float> kernelBias,\
-    std::vector<float>& output, int outputRowSize)
+    float* d_output, int outputRowSize)
 {
     #if 1
 // printf("11111\n");
-    float* d_output, *d_kernel, *d_input, *d_kernelBias;
-    int inputSize = sizeof(float) * inputRowSize, outputSize = sizeof(float) * outputRowSize;
+    float *d_kernel, *d_kernelBias;
+    // int inputSize = sizeof(float) * inputRowSize, outputSize = sizeof(float) * outputRowSize;
     int kernelSize = sizeof(float) * kernelRowSize * kernelColSize, kernelBiasSize = kernelRowSize * sizeof(float);
 //malloc
-    checkCudaErrors(cudaMalloc(&d_output, outputSize));
+    // checkCudaErrors(cudaMalloc(&d_output, outputSize));
     checkCudaErrors(cudaMalloc(&d_kernel,kernelSize));
-    checkCudaErrors(cudaMalloc(&d_input, inputSize));
+    // checkCudaErrors(cudaMalloc(&d_input, inputSize));
     checkCudaErrors(cudaMalloc(&d_kernelBias, kernelBiasSize));
 
     //memcpy H2D
-    checkCudaErrors(cudaMemcpy(d_input, input.data(), inputSize, cudaMemcpyHostToDevice));
+    // checkCudaErrors(cudaMemcpy(d_input, input.data(), inputSize, cudaMemcpyHostToDevice));
     checkCudaErrors(cudaMemcpy(d_kernel, kernel.data(), kernelSize, cudaMemcpyHostToDevice));
     checkCudaErrors(cudaMemcpy(d_kernelBias, kernelBias.data(), kernelBiasSize, cudaMemcpyHostToDevice));
 
@@ -935,11 +935,11 @@ void reluSPMV(std::vector<float> input, int inputRowSize, \
 
     //memcpy D2H
     checkCudaErrors(cudaDeviceSynchronize());
-    checkCudaErrors(cudaMemcpy(output.data(), d_output, outputSize, cudaMemcpyDeviceToHost));
+    // checkCudaErrors(cudaMemcpy(output.data(), d_output, outputSize, cudaMemcpyDeviceToHost));
     
     //cudaFree
-    cudaFree(d_output);
-    cudaFree(d_input);
+    // cudaFree(d_output);
+    // cudaFree(d_input);
     cudaFree(d_kernel);
     cudaFree(d_kernelBias);
 
@@ -1134,30 +1134,33 @@ int main(int argc, char* argv[]) {
         conv2_weight, 6, 16, 5, \
         conv2_bias, 2, \
         d_output2, 4, 4);
-    cudaMemcpy(output2.data(), d_output2, sizeof(float) * 6 * 24 * 24, cudaMemcpyDeviceToHost);
+    // cudaMemcpy(output2.data(), d_output2, sizeof(float) * 6 * 24 * 24, cudaMemcpyDeviceToHost);
 
     // printf("output2\n");
     // printTensor(output2, 4, 4, 16);
 
-    reluSPMV(output2, 256, \
+    reluSPMV(d_output2, 256, \
         fc1_weight, 120, 256, \
         fc1_bias, \
-        output3, 120);
+        d_output3, 120);
 
-    printf("output3\n");
-    printTensor(output3, 120, 1, 1);
+    // printf("output3\n");
+    // printTensor(output3, 120, 1, 1);
 
-    reluSPMV(output3, 120, \
+    reluSPMV(d_output3, 120, \
         fc2_weight, 84, 120, \
         fc2_bias, \
-        output4, 84);
-    printf("output4\n");
-    printTensor(output4, 84, 1, 1);
+        d_output4, 84);
+    // printf("output4\n");
+    // printTensor(output4, 84, 1, 1);
 
-    reluSPMV(output4, 84, \
+    reluSPMV(d_output4, 84, \
         fc3_weight, 10, 84, \
         fc3_bias, \
-        output5, 10);
+        d_output5, 10);
+    
+    cudaMemcpy(output5.data(), d_output5, sizeof(float) *10, cudaMemcpyDeviceToHost);
+
     printf("output5\n");
     printTensor(output5, 10, 1, 1);
 
