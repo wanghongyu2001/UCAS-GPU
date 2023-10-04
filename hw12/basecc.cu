@@ -22,18 +22,16 @@
 #define FETCH_FLOAT4(pointer) (reinterpret_cast<float4 *>(&(pointer))[0])
 
 
-const int inputRowSize = 12, inputColSize = 12, inputChannel = 6;
-const int outputRowSize = 8, outputColSize = 8, outputChannel = 16;
 const int kernelRowSize = 5, kernelColSize = 5;
-const int kernelOCSize = kernelColSize * kernelRowSize * inputChannel;
-const int THREAD_HEIGHT = 1, THREAD_WIDTH = 1,                                         // 一个线程负责的元素数
-        KERNEL_HEIGHT = kernelRowSize, KERNEL_WIDTH = kernelColSize,                                   // 卷积核大小
-        BLOCK_HEIGHT = 8, BLOCK_WIDTH = 4,                                                 // 分块大小
-        MALLOC_KERNEL_HEIGHT = KERNEL_HEIGHT % 2 == 0 ? KERNEL_HEIGHT : KERNEL_HEIGHT + 1, // 用于kernel在SMEM的修正尺寸 奇数尺寸无法分配空间
-        MALLOC_KERNEL_WIDTH = KERNEL_WIDTH % 2 == 0 ? KERNEL_WIDTH : KERNEL_WIDTH + 1,     // 用于kernel在SMEM的修正尺寸
-        MALLOC_BLOCK_HEIGHT = (BLOCK_HEIGHT + KERNEL_HEIGHT) * 2,                          // 用于block在SMEM的修正尺寸
-        MALLOC_BLOCK_WIDTH = (BLOCK_WIDTH + KERNEL_WIDTH) * 2,                             // 用于block在SMEM的修正尺寸
-        MALLOC_TEMP_SIZE = outputChannel * 4;  
+const int N  =1;
+const int THREAD_HEIGHT = 1, THREAD_WIDTH = 1,                                        
+        KERNEL_HEIGHT = 5, KERNEL_WIDTH = 5,                               
+        BLOCK_HEIGHT = 8, BLOCK_WIDTH = 4,                                               
+        MALLOC_KERNEL_HEIGHT = KERNEL_HEIGHT % 2 == 0 ? KERNEL_HEIGHT : KERNEL_HEIGHT + 1, 
+        MALLOC_KERNEL_WIDTH = KERNEL_WIDTH % 2 == 0 ? KERNEL_WIDTH : KERNEL_WIDTH + 1,    
+        MALLOC_BLOCK_HEIGHT = (BLOCK_HEIGHT + KERNEL_HEIGHT) * 2,                         
+        MALLOC_BLOCK_WIDTH = (BLOCK_WIDTH + KERNEL_WIDTH) * 2,                             
+        MALLOC_TEMP_SIZE = 16 * 4;  
 #define type float
 const int  KERNEL_SIZE = 2, TMP_SIZE = 16 * 4;
 template<
@@ -230,19 +228,19 @@ __global__ void _reluMaxPoll(type* input, type* output, int inputChannel, int in
     
 }
 
-void reluMaxPool(std::vector<float>& input, int inputRowSize, int inputColSize, int inputChannel, \
+void reluMaxPool(float* d_input, int inputRowSize, int inputColSize, int inputChannel, \
     int kernelRowSize, int kernelColSize, \
-    std::vector<float>& output, int outputRowSize, int outputColSize, int outputChannel)
+    float* d_output, int outputRowSize, int outputColSize, int outputChannel)
 {
 #if 1
-    float* d_input, * d_output;
-    int input_size = inputChannel * inputColSize * inputRowSize * sizeof(float);
-    int output_size = outputChannel * outputColSize * outputRowSize * sizeof(float);
-    checkCudaErrors(cudaMalloc(&d_input, input_size));
-    checkCudaErrors(cudaMalloc(&d_output, output_size));
+    // float * d_output;
+    // int input_size = inputChannel * inputColSize * inputRowSize * sizeof(float);
+    // int output_size = outputChannel * outputColSize * outputRowSize * sizeof(float);
+    // checkCudaErrors(cudaMalloc(&d_input, input_size));
+    // checkCudaErrors(cudaMalloc(&d_output, output_size));
 
     //memcpy
-    checkCudaErrors(cudaMemcpy(d_input, input.data(), input_size, cudaMemcpyHostToDevice));
+    // checkCudaErrors(cudaMemcpy(d_input, input.data(), input_size, cudaMemcpyHostToDevice));
     int gridx = outputColSize / BLOCK_WIDTH, gridy = outputRowSize / BLOCK_HEIGHT;
     gridx = gridx <= 0 ? 1 : gridx;
     gridy = gridy <= 0 ? 1 : gridy;
@@ -259,16 +257,16 @@ void reluMaxPool(std::vector<float>& input, int inputRowSize, int inputColSize, 
         2);
     cudaError_t cudaError = cudaGetLastError();
     if (cudaError != cudaSuccess) {
-        fprintf(stderr, "CUDA error: %s\n", cudaGetErrorString(cudaError));
+        fprintf(stderr, "CUDA error111: %s\n", cudaGetErrorString(cudaError));
         // 处理错误
     }
     else {
         // kernel 调用成功
     }
     cudaDeviceSynchronize();
-    checkCudaErrors(cudaMemcpy(output.data(), d_output, output_size, cudaMemcpyDeviceToHost));
-    cudaFree(d_input);
-    cudaFree(d_output);
+    // checkCudaErrors(cudaMemcpy(output.data(), d_output, output_size, cudaMemcpyDeviceToHost));
+    // cudaFree(d_input);
+    // cudaFree(d_output);
 #else
     for (int c = 0; c < outputChannel; c++)
     {
@@ -580,14 +578,13 @@ __global__ void v1_convolution(element_type* in, element_type* out, element_type
     }
 }
 
-
-void conv2d(std::vector<float>  input, int inputRowSize, int inputColSize, int inputChannel, \
-    std::vector<float>  kernel, std::vector<float> kernelBias, int kernelRowSize, int kernelColSize, \
-    std::vector<float>& output, int outputRowSize, int outputColSize, int outputChannel)
+void conv2d_fusion(std::vector<float> input, int inputRowSize, int inputColSize, \
+    std::vector<float> kernel, int inputChannel, int outputChannel, int kernelConv1Size, \
+    std::vector<float> kernelBias, int kernelMaxPoolSize,\
+    std::vector<float>& output, int outputRowSize, int outputColSize)
 {
-#if 1
-    int N = 1; //batch size
-    float* d_input, * d_output, * d_kernel, *d_kernelBias;
+
+    float* d_input, * d_output, * d_kernel, * d_kernelBias;
     int inputSize = inputChannel * inputRowSize * inputColSize * sizeof(float);
     int outputSize = outputChannel * outputRowSize * outputRowSize * sizeof(float);
     int kernelSize = kernelRowSize * kernelColSize * inputChannel * outputChannel * sizeof(float);
@@ -598,8 +595,83 @@ void conv2d(std::vector<float>  input, int inputRowSize, int inputColSize, int i
     checkCudaErrors(cudaMalloc(&d_output, outputSize));
     checkCudaErrors(cudaMalloc(&d_kernel, kernelSize));
     checkCudaErrors(cudaMalloc(&d_kernelBias, kernelBiasSize));
-    
+
     checkCudaErrors(cudaMemcpy(d_input, input.data(), inputSize, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_kernel, kernel.data(), kernelSize, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_kernelBias, kernelBias.data(), kernelBiasSize, cudaMemcpyHostToDevice));
+
+    v1_convolution<BLOCK_HEIGHT, BLOCK_WIDTH, KERNEL_HEIGHT, KERNEL_WIDTH, MALLOC_TEMP_SIZE,
+        MALLOC_KERNEL_HEIGHT, MALLOC_KERNEL_WIDTH, MALLOC_BLOCK_HEIGHT, MALLOC_BLOCK_WIDTH>
+        << <dimGrid, dimBlock >> > (d_input, d_output, d_kernel, d_kernelBias,
+            1, inputChannel, inputRowSize, inputColSize, outputChannel, outputRowSize, outputColSize, kernelRowSize, kernelColSize);
+    cudaDeviceSynchronize();
+    checkCudaErrors(cudaMemcpy(output.data(), d_output, outputSize, cudaMemcpyDeviceToHost));
+
+    //free
+    checkCudaErrors(cudaFree(d_input));
+    checkCudaErrors(cudaFree(d_output));
+    checkCudaErrors(cudaFree(d_kernel));
+    checkCudaErrors(cudaFree(d_kernelBias));
+
+    inputRowSize = inputRowSize - kernelConv1Size + 1;
+    inputColSize = inputColSize - kernelConv1Size + 1;
+    outputRowSize = inputRowSize / kernelMaxPoolSize;
+    outputColSize = inputColSize / kernelMaxPoolSize;
+    outputChannel = outputChannel;
+    inputChannel = outputChannel;
+    // int input_size = inputChannel * inputColSize * inputRowSize * sizeof(float);
+    float* d_output_relu;
+    int output_size_relu = outputChannel * outputColSize * outputRowSize * sizeof(float);
+    checkCudaErrors(cudaMalloc(&d_output_relu, output_size_relu));
+
+    //memcpy
+    // checkCudaErrors(cudaMemcpy(d_input, input.data(), input_size, cudaMemcpyHostToDevice));
+    int gridx = outputColSize / BLOCK_WIDTH, gridy = outputRowSize / BLOCK_HEIGHT;
+    gridx = gridx <= 0 ? 1 : gridx;
+    gridy = gridy <= 0 ? 1 : gridy;
+    #if 1
+    printf("grid %d %d, block %d %d\n", gridx, gridy, BLOCK_WIDTH, BLOCK_HEIGHT);
+    #endif
+    dim3 grid(gridx, gridy);
+    dim3 block(BLOCK_WIDTH, BLOCK_HEIGHT);
+    // printf("1111\n");
+    // f1 << <1, 200 >> > (1);
+    // cudaDeviceSynchronize();
+    _reluMaxPoll< BLOCK_HEIGHT, BLOCK_WIDTH, KERNEL_SIZE, TMP_SIZE> << <grid, block >> > (d_output, d_output_relu, inputChannel, inputRowSize, inputColSize,
+        outputChannel, outputRowSize, outputColSize,
+        2);
+    cudaError_t cudaError = cudaGetLastError();
+    if (cudaError != cudaSuccess) {
+        fprintf(stderr, "CUDA error222: %s\n", cudaGetErrorString(cudaError));
+        // 处理错误
+    }
+    else {
+        // kernel 调用成功
+    }
+    cudaDeviceSynchronize();
+    checkCudaErrors(cudaMemcpy(output.data(), d_output_relu, output_size_relu, cudaMemcpyDeviceToHost));
+    // cudaFree(d_output);
+    cudaFree(d_output_relu);
+}
+
+void conv2d(float*  d_input, int inputRowSize, int inputColSize, int inputChannel, \
+    std::vector<float>  kernel, std::vector<float> kernelBias, int kernelRowSize, int kernelColSize, \
+    float* d_output, int outputRowSize, int outputColSize, int outputChannel)
+{
+#if 1
+    float * d_kernel, *d_kernelBias;
+    int inputSize = inputChannel * inputRowSize * inputColSize * sizeof(float);
+    int outputSize = outputChannel * outputRowSize * outputRowSize * sizeof(float);
+    int kernelSize = kernelRowSize * kernelColSize * inputChannel * outputChannel * sizeof(float);
+    int kernelBiasSize = outputChannel * sizeof(float);
+    dim3 dimGrid(outputColSize / BLOCK_WIDTH, outputRowSize / BLOCK_HEIGHT);
+    dim3 dimBlock(BLOCK_WIDTH / THREAD_WIDTH, BLOCK_HEIGHT / THREAD_HEIGHT);
+    // checkCudaErrors(cudaMalloc(&d_input, inputSize));
+    // checkCudaErrors(cudaMalloc(&d_output, outputSize));
+    checkCudaErrors(cudaMalloc(&d_kernel, kernelSize));
+    checkCudaErrors(cudaMalloc(&d_kernelBias, kernelBiasSize));
+    
+    // checkCudaErrors(cudaMemcpy(d_input, input.data(), inputSize, cudaMemcpyHostToDevice));
     checkCudaErrors(cudaMemcpy(d_kernel, kernel.data(), kernelSize, cudaMemcpyHostToDevice));
     checkCudaErrors(cudaMemcpy(d_kernelBias, kernelBias.data(), kernelBiasSize, cudaMemcpyHostToDevice));
 
@@ -608,11 +680,11 @@ void conv2d(std::vector<float>  input, int inputRowSize, int inputColSize, int i
         << <dimGrid, dimBlock >> > (d_input, d_output, d_kernel, d_kernelBias,
             N, inputChannel, inputRowSize, inputColSize, outputChannel, outputRowSize, outputColSize, kernelRowSize, kernelColSize);
     cudaDeviceSynchronize();
-    checkCudaErrors(cudaMemcpy(output.data(), d_output, outputSize, cudaMemcpyDeviceToHost));
+    // checkCudaErrors(cudaMemcpy(output.data(), d_output, outputSize, cudaMemcpyDeviceToHost));
 
     //free
-    checkCudaErrors(cudaFree(d_input));
-    checkCudaErrors(cudaFree(d_output));
+    // checkCudaErrors(cudaFree(d_input));
+    // checkCudaErrors(cudaFree(d_output));
     checkCudaErrors(cudaFree(d_kernel));
     checkCudaErrors(cudaFree(d_kernelBias));
 #else
@@ -755,26 +827,29 @@ void printTensor(std::vector<float> A, int rowS, int colS, int chaS)
     }
 
 }
-void poolReluConv1(std::vector<float> input, int inputRowSize, int inputColSize, \
+void poolReluConv1(float* input, int inputRowSize, int inputColSize, \
     std::vector<float> kernelWeight, int inputChannel, int outputChannel, int kernelConv1Size, \
     std::vector<float> kernelConv1Bias, int kernelMaxPoolSize, \
-    std::vector<float>& output)
+    float* output, int outputRowSize, int outputColSize)
 {
-    std::vector<float> outputTmp((inputRowSize - kernelConv1Size + 1) * (inputRowSize - kernelConv1Size + 1) * outputChannel, 0);
+    // std::vector<float> outputTmp((inputRowSize - kernelConv1Size + 1) * (inputRowSize - kernelConv1Size + 1) * outputChannel, 0);
+    float* outputTmp;
+    cudaMalloc(&outputTmp, sizeof(float) * (inputRowSize - kernelConv1Size + 1) * (inputRowSize - kernelConv1Size + 1) * outputChannel);
     conv2d(input, inputRowSize, inputColSize, inputChannel, \
         kernelWeight, kernelConv1Bias, kernelConv1Size, kernelConv1Size, \
         outputTmp, inputRowSize - kernelConv1Size + 1, inputColSize - kernelConv1Size + 1, outputChannel);
-
+    
     inputRowSize = inputRowSize - kernelConv1Size + 1;
     inputColSize = inputColSize - kernelConv1Size + 1;
-    int outputRowSize = inputRowSize / kernelMaxPoolSize;
-    int outputColSize = inputColSize / kernelMaxPoolSize;
+    outputRowSize = inputRowSize / kernelMaxPoolSize;
+    outputColSize = inputColSize / kernelMaxPoolSize;
     outputChannel = outputChannel;
     inputChannel = outputChannel;
     // printTensor(outputTmp, 24, 24, 6);
     reluMaxPool(outputTmp, inputRowSize, inputColSize, inputChannel, \
         kernelMaxPoolSize, kernelMaxPoolSize, \
         output, outputRowSize, outputColSize, outputChannel);
+    cudaFree(outputTmp);
     // printTensor(output, 12, 12, 6);
 
 }
@@ -973,7 +1048,7 @@ int main(int argc, char* argv[]) {
 
         // x = self.pool(F.relu(self.conv1(x))), x = images[t] conv1 = nn.Conv2d(1, 6, 5)
         //pool = nn.MaxPool2d(2, 2)
-#if 1
+#if 0
         std::vector<float> output1(6 * 24 * 24, 0);
         std::vector<float> output2(6 * 24 * 24, 0);
         std::vector<float> output3(120, 0);
@@ -1028,31 +1103,41 @@ int main(int argc, char* argv[]) {
         // std::cout << "real: " << labels[t]<< ", predict : "<<  maxT(output5) << std::endl;
     }
 
-#ifdef DEBUG
-    std::vector<float> output1(6 * 24 * 24, 0);
+#if 1
+    // std::vector<float> output1(6 * 24 * 24, 0);
+    float* d_output1, *d_output2, *d_output3, *d_output4, *d_output5, *d_input;
+    cudaMalloc(&d_input, 1 * 28 * 28 * sizeof(float));
+    cudaMalloc(&d_output1, 6 * 24 * 24 * sizeof(float));
+    cudaMalloc(&d_output2, 6 * 24 * 24 * sizeof(float));
+    cudaMalloc(&d_output3, 120 * sizeof(float));
+    cudaMalloc(&d_output4, 84 * sizeof(float));
+    cudaMalloc(&d_output5, 10 * sizeof(float));
     std::vector<float> output2(6 * 24 * 24, 0);
     std::vector<float> output3(120, 0);
     std::vector<float> output4(84, 0);
     std::vector<float> output5(10, 0);
     std::vector<float> input(28 * 28, 0);
     init_ij(input, 28, 28, 1);
+    cudaMemcpy(d_input, input.data(), sizeof(float) * 28 * 28, cudaMemcpyHostToDevice);
+
     printf("input:\n");
     printTensor(input, 28, 28, 1);
-    poolReluConv1(input, 28, 28, \
+    poolReluConv1(d_input, 28, 28, \
         conv1_weight, 1, 6, 5, \
         conv1_bias, 2, \
-        output1);
+        d_output1, 12, 12);
 
-    printf("--------------output1--------------\n");
-    printTensor(output1, 12, 12, 6);
+    // printf("--------------output1--------------\n");
+    // printTensor(output1, 12, 12, 6);
 
-    poolReluConv1(output1, 12, 12, \
+    poolReluConv1(d_output1, 12, 12, \
         conv2_weight, 6, 16, 5, \
         conv2_bias, 2, \
-        output2);
+        d_output2, 4, 4);
+    cudaMemcpy(output2.data(), d_output2, sizeof(float) * 6 * 24 * 24, cudaMemcpyDeviceToHost);
 
-    printf("output2\n");
-    printTensor(output2, 4, 4, 16);
+    // printf("output2\n");
+    // printTensor(output2, 4, 4, 16);
 
     reluSPMV(output2, 256, \
         fc1_weight, 120, 256, \
