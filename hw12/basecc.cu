@@ -22,7 +22,7 @@
 #define FETCH_FLOAT4(pointer) (reinterpret_cast<float4 *>(&(pointer))[0])
 
 
-const int kernelRowSize = 5, kernelColSize = 5;
+// const int kernelRowSize = 5, kernelColSize = 5;
 const int N  =1;
 const int THREAD_HEIGHT = 1, THREAD_WIDTH = 1,                                        
         KERNEL_HEIGHT = 5, KERNEL_WIDTH = 5,                               
@@ -264,7 +264,7 @@ void reluMaxPool(float* d_input, int inputRowSize, int inputColSize, int inputCh
     else {
         // kernel 调用成功
     }
-    cudaDeviceSynchronize();
+    // cudaDeviceSynchronize();
     // checkCudaErrors(cudaMemcpy(output.data(), d_output, output_size, cudaMemcpyDeviceToHost));
     // cudaFree(d_input);
     // cudaFree(d_output);
@@ -579,82 +579,6 @@ __global__ void v1_convolution(element_type* in, element_type* out, element_type
     }
 }
 
-void conv2d_fusion(std::vector<float> input, int inputRowSize, int inputColSize, \
-    std::vector<float> kernel, int inputChannel, int outputChannel, int kernelConv1Size, \
-    std::vector<float> kernelBias, int kernelMaxPoolSize,\
-    std::vector<float>& output, int outputRowSize, int outputColSize)
-{
-
-    float* d_input, * d_output, * d_kernel, * d_kernelBias;
-    int inputSize = inputChannel * inputRowSize * inputColSize * sizeof(float);
-    int outputSize = outputChannel * outputRowSize * outputRowSize * sizeof(float);
-    int kernelSize = kernelRowSize * kernelColSize * inputChannel * outputChannel * sizeof(float);
-    int kernelBiasSize = outputChannel * sizeof(float);
-    dim3 dimGrid(outputColSize / BLOCK_WIDTH, outputRowSize / BLOCK_HEIGHT);
-    dim3 dimBlock(BLOCK_WIDTH / THREAD_WIDTH, BLOCK_HEIGHT / THREAD_HEIGHT);
-    checkCudaErrors(cudaMalloc(&d_input, inputSize));
-    checkCudaErrors(cudaMalloc(&d_output, outputSize));
-    checkCudaErrors(cudaMalloc(&d_kernel, kernelSize));
-    checkCudaErrors(cudaMalloc(&d_kernelBias, kernelBiasSize));
-
-    checkCudaErrors(cudaMemcpy(d_input, input.data(), inputSize, cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_kernel, kernel.data(), kernelSize, cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_kernelBias, kernelBias.data(), kernelBiasSize, cudaMemcpyHostToDevice));
-
-    v1_convolution<BLOCK_HEIGHT, BLOCK_WIDTH, KERNEL_HEIGHT, KERNEL_WIDTH, MALLOC_TEMP_SIZE,
-        MALLOC_KERNEL_HEIGHT, MALLOC_KERNEL_WIDTH, MALLOC_BLOCK_HEIGHT, MALLOC_BLOCK_WIDTH>
-        << <dimGrid, dimBlock >> > (d_input, d_output, d_kernel, d_kernelBias,
-            1, inputChannel, inputRowSize, inputColSize, outputChannel, outputRowSize, outputColSize, kernelRowSize, kernelColSize);
-    cudaDeviceSynchronize();
-    checkCudaErrors(cudaMemcpy(output.data(), d_output, outputSize, cudaMemcpyDeviceToHost));
-
-    //free
-    checkCudaErrors(cudaFree(d_input));
-    checkCudaErrors(cudaFree(d_output));
-    checkCudaErrors(cudaFree(d_kernel));
-    checkCudaErrors(cudaFree(d_kernelBias));
-
-    inputRowSize = inputRowSize - kernelConv1Size + 1;
-    inputColSize = inputColSize - kernelConv1Size + 1;
-    outputRowSize = inputRowSize / kernelMaxPoolSize;
-    outputColSize = inputColSize / kernelMaxPoolSize;
-    outputChannel = outputChannel;
-    inputChannel = outputChannel;
-    // int input_size = inputChannel * inputColSize * inputRowSize * sizeof(float);
-    float* d_output_relu;
-    int output_size_relu = outputChannel * outputColSize * outputRowSize * sizeof(float);
-    checkCudaErrors(cudaMalloc(&d_output_relu, output_size_relu));
-
-    //memcpy
-    // checkCudaErrors(cudaMemcpy(d_input, input.data(), input_size, cudaMemcpyHostToDevice));
-    int gridx = outputColSize / BLOCK_WIDTH, gridy = outputRowSize / BLOCK_HEIGHT;
-    gridx = gridx <= 0 ? 1 : gridx;
-    gridy = gridy <= 0 ? 1 : gridy;
-    #if 1
-    printf("grid %d %d, block %d %d\n", gridx, gridy, BLOCK_WIDTH, BLOCK_HEIGHT);
-    #endif
-    dim3 grid(gridx, gridy);
-    dim3 block(BLOCK_WIDTH, BLOCK_HEIGHT);
-    // printf("1111\n");
-    // f1 << <1, 200 >> > (1);
-    // cudaDeviceSynchronize();
-    _reluMaxPoll< BLOCK_HEIGHT, BLOCK_WIDTH, KERNEL_SIZE, TMP_SIZE> << <grid, block >> > (d_output, d_output_relu, inputChannel, inputRowSize, inputColSize,
-        outputChannel, outputRowSize, outputColSize,
-        2);
-    cudaError_t cudaError = cudaGetLastError();
-    if (cudaError != cudaSuccess) {
-        fprintf(stderr, "CUDA error222: %s\n", cudaGetErrorString(cudaError));
-        // 处理错误
-    }
-    else {
-        // kernel 调用成功
-    }
-    cudaDeviceSynchronize();
-    checkCudaErrors(cudaMemcpy(output.data(), d_output_relu, output_size_relu, cudaMemcpyDeviceToHost));
-    // cudaFree(d_output);
-    cudaFree(d_output_relu);
-}
-
 void conv2d(float*  d_input, int inputRowSize, int inputColSize, int inputChannel, \
     float*  d_kernel, float* d_kernelBias, int kernelRowSize, int kernelColSize, \
     float* d_output, int outputRowSize, int outputColSize, int outputChannel)
@@ -680,7 +604,7 @@ void conv2d(float*  d_input, int inputRowSize, int inputColSize, int inputChanne
         MALLOC_KERNEL_HEIGHT, MALLOC_KERNEL_WIDTH, MALLOC_BLOCK_HEIGHT, MALLOC_BLOCK_WIDTH>
         << <dimGrid, dimBlock >> > (d_input, d_output, d_kernel, d_kernelBias,
             N, inputChannel, inputRowSize, inputColSize, outputChannel, outputRowSize, outputColSize, kernelRowSize, kernelColSize);
-    cudaDeviceSynchronize();
+    // cudaDeviceSynchronize();
     // checkCudaErrors(cudaMemcpy(output.data(), d_output, outputSize, cudaMemcpyDeviceToHost));
 
     //free
@@ -865,7 +789,6 @@ __device__ __forceinline__ float warpReduceSum(float sum) {
     return sum;
 }
 
-// if N>= 128
 __global__ void reluGemv( float* __restrict__ A, float* __restrict__ ABias, float* __restrict__ x, float* __restrict__ y, const int M,const int N) {
     // Block index
     int bx = blockIdx.x;
@@ -907,6 +830,60 @@ __global__ void reluGemv( float* __restrict__ A, float* __restrict__ ABias, floa
     }
 }
 
+__global__ void reluGemv_final( float* __restrict__ A, float* __restrict__ ABias, float* __restrict__ x, float* __restrict__ y, const int M,const int N,
+                                int* predict, int idx) {
+    // Block index
+    int bx = blockIdx.x;
+
+    // Thread index
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int tid = blockIdx.y * blockDim.y + blockIdx.x * blockDim.x + threadIdx.y * blockDim.x + threadIdx.x;
+    const int warp_size = 32;
+    int laneId = tx % warp_size;
+    int current_row = blockDim.y * bx + ty;
+
+    if (current_row < M) {
+        float res = 0;
+        int kIteration = (N / warp_size) / 4;
+        // if (tx == 0) printf("iter : %d, N %d\n", kIteration, N);
+        if (kIteration == 0) kIteration = 1;
+        A = &A[current_row * N];
+#pragma unroll
+        for (int i = 0; i < kIteration; i++) {
+            int current_col_vec = (i * warp_size + laneId);
+            float4 current_val = reinterpret_cast<float4*>(A)[current_col_vec];
+            float4 current_x = reinterpret_cast<float4*>(x)[current_col_vec];
+            res += current_val.x * current_x.x;
+            res += current_val.y * current_x.y;
+            res += current_val.z * current_x.z;
+            res += current_val.w * current_x.w;
+        }
+        res = warpReduceSum<warp_size>(res);
+        if (laneId == 0){
+            res += ABias[current_row];
+            if (res >= 0)
+                y[current_row] = res;
+            else
+                y[current_row] = 0;
+        }
+        if (tid == 0)
+        {
+            int max_idx = 0, tmp_max = 0;
+            for (int i = 0; i < 10; i ++ )
+                if (tmp_max < y[i])
+                {
+                    tmp_max = y[i];
+                    max_idx = i;
+                }
+            // printf("--------maxidx = %d\n", max_idx);
+            predict[idx] = max_idx;
+        }
+
+    }
+}
+
+
 
 void reluSPMV(float* d_input, int inputRowSize, \
     float* d_kernel, int kernelRowSize, int kernelColSize, \
@@ -914,37 +891,11 @@ void reluSPMV(float* d_input, int inputRowSize, \
     float* d_output, int outputRowSize)
 {
     #if 1
-// printf("11111\n");
-    // float *d_kernel, *d_kernelBias;
-    // int inputSize = sizeof(float) * inputRowSize, outputSize = sizeof(float) * outputRowSize;
-    // int kernelSize = sizeof(float) * kernelRowSize * kernelColSize, kernelBiasSize = kernelRowSize * sizeof(float);
-//malloc
-    // checkCudaErrors(cudaMalloc(&d_output, outputSize));
-    // checkCudaErrors(cudaMalloc(&d_kernel,kernelSize));
-    // checkCudaErrors(cudaMalloc(&d_input, inputSize));
-    // checkCudaErrors(cudaMalloc(&d_kernelBias, kernelBiasSize));
 
-    //memcpy H2D
-    // checkCudaErrors(cudaMemcpy(d_input, input.data(), inputSize, cudaMemcpyHostToDevice));
-    // checkCudaErrors(cudaMemcpy(d_kernel, kernel.data(), kernelSize, cudaMemcpyHostToDevice));
-    // checkCudaErrors(cudaMemcpy(d_kernelBias, kernelBias.data(), kernelBiasSize, cudaMemcpyHostToDevice));
-
-    //call cudakernel M row, N col
     dim3 dimGrid((kernelRowSize + 3) / 4);
     dim3 dimBlock(32, 4);
     reluGemv<< < dimGrid, dimBlock >> > (d_kernel, d_kernelBias, d_input, d_output, kernelRowSize, kernelColSize);
 
-    //memcpy D2H
-    checkCudaErrors(cudaDeviceSynchronize());
-    // checkCudaErrors(cudaMemcpy(output.data(), d_output, outputSize, cudaMemcpyDeviceToHost));
-    
-    //cudaFree
-    // cudaFree(d_output);
-    // cudaFree(d_input);
-    // cudaFree(d_kernel);
-    // cudaFree(d_kernelBias);
-
-    
     
 #else
     for (int i = 0; i < outputRowSize; i++)
@@ -959,6 +910,34 @@ void reluSPMV(float* d_input, int inputRowSize, \
     }
 #endif
 }
+
+
+void reluSPMV_final(float* d_input, int inputRowSize, \
+    float* d_kernel, int kernelRowSize, int kernelColSize, \
+    float* d_kernelBias,\
+    float* d_output, int outputRowSize, int* predict, int idx)
+{
+    #if 1
+
+    dim3 dimGrid((kernelRowSize + 3) / 4);
+    dim3 dimBlock(32, 4);
+    reluGemv_final<< < dimGrid, dimBlock >> > (d_kernel, d_kernelBias, d_input, d_output, kernelRowSize, kernelColSize, predict, idx);
+
+    
+#else
+    for (int i = 0; i < outputRowSize; i++)
+    {
+            double tmp = 0;
+            for (int k = 0; k < inputRowSize; k++)
+                tmp += kernel[i * kernelColSize + k] * input[k];
+            tmp += kernelBias[i];
+            if (tmp >= 0) output[i] = tmp;
+            else output[i] = 0;
+            
+    }
+#endif
+}
+
 int maxT(std::vector<float> A)
 {
     int tmp = A[0], idx = 0;
@@ -971,6 +950,69 @@ int maxT(std::vector<float> A)
     }
     return idx;
 
+}
+// #define THREAD_PER_BLOCK 256
+#define WARP_SIZE 32
+
+__device__ void warpReduce(volatile float* cache, unsigned int tid){
+    cache[tid]+=cache[tid+32];
+    cache[tid]+=cache[tid+16];
+    cache[tid]+=cache[tid+8];
+    cache[tid]+=cache[tid+4];
+    cache[tid]+=cache[tid+2];
+    cache[tid]+=cache[tid+1];
+}
+
+__global__ void reduce(int *predict,int *labels, int *sum, int N){
+    __shared__ float sdata[256];
+
+    // each thread loads one element from global to shared mem
+    unsigned int tid = threadIdx.x;
+    unsigned int i = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
+    // printf("predict[i] =%d  predict[i + blockDim.x] %d\n", predict[i], predict[i + blockDim.x]);
+    if (i < N)
+        sdata[tid] = (predict[i] == labels[i]) ;
+    if (i + blockDim.x < N)
+        sdata[tid] += (predict[i + blockDim.x] == labels[i + blockDim.x]);
+    __syncthreads();
+
+    // do reduction in shared mem
+    for (unsigned int s=blockDim.x/2; s>32; s>>=1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+
+    // write result for this block to global mem
+    if (tid < 32) warpReduce(sdata, tid);
+    if (tid == 0) sum[blockIdx.x] = sdata[0];
+}
+
+int check(int* d_predict, int* d_labels, int N)
+{    
+    int THREAD_PER_BLOCK = 256;
+    int NUM_PER_BLOCK = 2* 256;
+    printf("N %d\n", N);
+    int block_num = (N + NUM_PER_BLOCK - 1) / NUM_PER_BLOCK;
+    int *d_sum, *sum = (int*)malloc(sizeof(int) * block_num);
+
+    printf("N %d. block_num %d\n", N, block_num);
+    cudaMalloc(&d_sum, block_num * sizeof(int));
+    
+    dim3 Grid( block_num, 1);
+    dim3 Block( THREAD_PER_BLOCK, 1);
+
+    reduce<<<Grid,Block>>>(d_predict, d_labels, d_sum, N);
+    cudaMemcpy(sum, d_sum, block_num*sizeof(int),cudaMemcpyDeviceToHost);
+    int ans = 0;
+    for (int i = 0; i < block_num; i ++ )
+    {
+        ans += sum[i];
+        printf("sum[%d] = %d\n", i, sum[i]);
+    }
+    return ans;
+    
 }
 void init_ij(std::vector<float>& A, int n, int m, int c)
 {
@@ -1034,6 +1076,11 @@ int main(int argc, char* argv[]) {
     float* d_conv1_weight, *d_conv1_bias, *d_conv2_weight, *d_conv2_bias, *d_fc1_weight,
         *d_fc1_bias, *d_fc2_weight, *d_fc2_bias, *d_fc3_weight, *d_fc3_bias;
     float* outputTmp;
+    int *d_predict, *d_labels;
+    int *predict = (int*)malloc(sizeof(int) * labels.size());
+    
+    cudaMalloc(&d_predict, sizeof(int) * labels.size());
+    cudaMalloc(&d_labels, sizeof(int) * labels.size());
     cudaMalloc(&outputTmp, sizeof(float) * (24) * (24) * 16);
     cudaMalloc(&d_conv1_weight, conv1_weight.size() * sizeof(float));
     cudaMalloc(&d_conv1_bias, conv1_bias.size() * sizeof(float));
@@ -1058,6 +1105,7 @@ int main(int argc, char* argv[]) {
     std::vector<float> input(28 * 28, 0);
     // init_ij(input, 28, 28, 1);
 
+    cudaMemcpy(d_labels, labels.data(), labels.size() * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(d_conv1_weight, conv1_weight.data(), sizeof(float) * conv1_weight.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_conv1_bias, conv1_bias.data(), sizeof(float) * conv1_bias.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_conv2_weight, conv2_weight.data(), sizeof(float) * conv2_weight.size(), cudaMemcpyHostToDevice);
@@ -1128,12 +1176,13 @@ int main(int argc, char* argv[]) {
     // printf("output4\n");
     // printTensor(output4, 84, 1, 1);
 
-    reluSPMV(d_output4, 84, \
+    reluSPMV_final(d_output4, 84, \
         d_fc3_weight, 10, 84, \
         d_fc3_bias, \
-        d_output5, 10);
+        d_output5, 10,
+        d_predict, t);
     
-    cudaMemcpy(output5.data(), d_output5, sizeof(float) *10, cudaMemcpyDeviceToHost);
+    // cudaMemcpy(output5.data(), d_output5, sizeof(float) *10, cudaMemcpyDeviceToHost);
 
     // printf("output5\n");
     // printTensor(output5, 10, 1, 1);
@@ -1187,15 +1236,17 @@ int main(int argc, char* argv[]) {
     // printf("output4\n");
     // printTensor(output4, 84, 1, 1);
 
-    reluSPMV(d_output4, 84, \
+    reluSPMV_final(d_output4, 84, \
         d_fc3_weight, 10, 84, \
         d_fc3_bias, \
-        d_output5, 10);
+        d_output5, 10,
+        d_predict, 0);
     
-    cudaMemcpy(output5.data(), d_output5, sizeof(float) *10, cudaMemcpyDeviceToHost);
 
-    printf("output5\n");
-    printTensor(output5, 10, 1, 1);
+   
+    // printf("pre %d\n", tmp_pre[0]);
+    // printf("output5\n");
+    // printTensor(output5, 10, 1, 1);
 
 
     // printf("\noutput2:\n");
@@ -1203,6 +1254,9 @@ int main(int argc, char* argv[]) {
 
 
 #endif
+    cudaDeviceSynchronize();
+    sum = check(d_predict, d_labels, labels.size());
+    // cudaMemcpy(predict, d_predict, sizeof(int) *labels.size(), cudaMemcpyDeviceToHost);
     cudaFree(d_conv1_weight);
     cudaFree(d_conv1_bias);
     cudaFree(d_conv2_weight);
@@ -1220,12 +1274,13 @@ int main(int argc, char* argv[]) {
     cudaFree(d_fc3_weight);
     cudaFree(d_fc3_bias);
     cudaFree(outputTmp);
+    cudaFree(d_predict);
+    cudaFree(d_labels);
     // 向主机端同步以等待所有异步调用的GPU kernel执行完毕，这句必须要有
-    cudaDeviceSynchronize();
     // 结束计时
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> diff = end - start;
-    // printf("sum = %d\n", sum);
+    printf("sum = %d\n", sum);
 
     // 输出结果，请严格保持此输出格式，并把0.0001替换成实际的准确率，请不要输出除了此结果之外的任何内容！！！
     std::cout << std::fixed << std::setprecision(2) << diff.count() << ":" << std::setprecision(4) << (float)sum / (float)images.size() << std::endl;
