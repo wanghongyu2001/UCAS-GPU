@@ -7,7 +7,7 @@
 #include <chrono>
 #include <iomanip>
 #include <string>
-#include <cuda.h>
+
 #include <cuda_runtime.h>
 
 #define checkCudaErrors(func)				\
@@ -23,8 +23,8 @@
 
 
 // const int kernelRowSize = 5, kernelColSize = 5;
-const int N  =1;
-const int KERNEL_HEIGHT = 5, KERNEL_WIDTH = 5, BLOCK_HEIGHT = 8, BLOCK_WIDTH = 4, MALLOC_TEMP_SIZE = 16 * 4;  
+const int N = 1;
+const int KERNEL_HEIGHT = 5, KERNEL_WIDTH = 5, BLOCK_HEIGHT = 8, BLOCK_WIDTH = 4, MALLOC_TEMP_SIZE = 16 * 4;
 #define type float
 const int  KERNEL_SIZE = 2, TMP_SIZE = 16 * 4;
 template<
@@ -40,6 +40,7 @@ __global__ void _reluMaxPoll(type* input, type* output, int inputChannel, int in
     // printf("%d %d %d %d %d %d %d\n", inputChannel, inputRowSize, inputColSize,
     //     outputChannel, outputRowSize, outputColSize,
     //     kernelSize);
+    int threadNumPerBlock = blockDim.x * blockDim.y;
     int tid = threadIdx.x + threadIdx.y * blockDim.x;
     int row_boundary = (outputRowSize / blockDim.y - 1);
     int col_boundary = (outputColSize / blockDim.x - 1);
@@ -53,10 +54,10 @@ __global__ void _reluMaxPoll(type* input, type* output, int inputChannel, int in
     float load_reg[4]; //加载到寄存器
     //这个block元素开始的位置 对应input的元素位置，因为pool层所以*kernel_size
     int begin_pos = (blockIdx.y * blockDim.y * inputColSize + blockIdx.x * blockDim.x) * 2;
-    #ifdef DEBUG
-    if (threadIdx.x == 0 && threadIdx.y == 0 )
+#ifdef DEBUG
+    if (threadIdx.x == 0 && threadIdx.y == 0)
         printf("begin_pos %d blockIdx.x = %d, idy = %d\n", begin_pos, blockIdx.x, blockIdx.y);
-    #endif
+#endif
     int trans_ele_num = 4; //线程转移元素数
     int cur_in_block_height = blockDim.y * 2, cur_in_block_width = blockDim.x * 2;
     int in_tile_thread_per_row, in_tile_row_start, in_tile_col, in_tile_row_stride;
@@ -69,22 +70,28 @@ __global__ void _reluMaxPoll(type* input, type* output, int inputChannel, int in
     in_tile_thread_per_row = blockDim.x * 2 / trans_ele_num;
     in_tile_row_start = tid / in_tile_thread_per_row;
     in_tile_col = tid % in_tile_thread_per_row * trans_ele_num;
-    in_tile_row_stride = blockDim.x * blockDim.y / in_tile_thread_per_row;
-    #ifdef DEBUG
-    if (threadIdx.x == 0 && threadIdx.y == 0) 
+    in_tile_row_stride = threadNumPerBlock / in_tile_thread_per_row;
+#ifdef DEBUG
+    if (threadIdx.x == 0 && threadIdx.y == 0)
         printf("in_per_row = %d, in_tile_row_stride = %d, cur_in_block_height = %d ,cur_in_block_width = %d\n",
-         in_tile_thread_per_row, in_tile_row_stride, cur_in_block_height, cur_in_block_width);
-    #endif
+            in_tile_thread_per_row, in_tile_row_stride, cur_in_block_height, cur_in_block_width);
+#endif
     // 预取数据
     for (int i = 0; i < cur_in_block_height && in_tile_row_start < cur_in_block_height; i += in_tile_row_stride)
     {
         FETCH_FLOAT4(load_reg[0]) = FETCH_FLOAT4(input[begin_pos + OFFSET(in_tile_row_start + i, in_tile_col, inputColSize)]);
-        #ifdef DEBUG
-        if (blockIdx.x == 1 && blockIdx.y == 0 && threadIdx.x == 0 && threadIdx.y == 0) 
+        if (begin_pos + OFFSET(in_tile_row_start + i, in_tile_col, inputColSize) >= inputRowSize * inputColSize * inputChannel)
+        {
+
+            // printf("out the boundary %d \n", 4 * (begin_pos + OFFSET(in_tile_row_start + i, in_tile_col, inputColSize)));
+            continue;
+        }
+#ifdef DEBUG
+        if (blockIdx.x == 1 && blockIdx.y == 0 && threadIdx.x == 0 && threadIdx.y == 0)
         {
             printf("input pos %d \n", begin_pos + (in_tile_row_start + i) * inputColSize + in_tile_col);
         }
-        #endif
+#endif
         s_in[in_tile_row_start + i][in_tile_col] = load_reg[0];
         s_in[in_tile_row_start + i][in_tile_col + 1] = load_reg[1];
         s_in[in_tile_row_start + i][in_tile_col + 2] = load_reg[2];
@@ -93,13 +100,16 @@ __global__ void _reluMaxPoll(type* input, type* output, int inputChannel, int in
         {
             for (int j = in_tile_col + trans_ele_num; j < cur_in_block_width; j++)
             {
+                if (begin_pos + (in_tile_row_start + i) * inputColSize + j >= inputRowSize * inputColSize * inputChannel)
+                    continue;
+
                 s_in[in_tile_row_start + i][j] = input[begin_pos + (in_tile_row_start + i) * inputColSize + j];
             }
         }
     }
     //等待数据trans结束
     __syncthreads();
-    #ifdef DEBUG
+#ifdef DEBUG
     if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0 && threadIdx.y == 0) // 16 8
     {
         for (int i = 0; i < cur_in_block_height; i++)
@@ -110,7 +120,7 @@ __global__ void _reluMaxPoll(type* input, type* output, int inputChannel, int in
             }
         }
     }
-    #endif
+#endif
     // 直接除以kernelsize = 2
     int cur_out_block_height = cur_in_block_height / 2;
     int cur_out_block_width = cur_in_block_width / 2;
@@ -119,17 +129,17 @@ __global__ void _reluMaxPoll(type* input, type* output, int inputChannel, int in
 
     // if (blockIdx.x == col_boundary)
     //     cur_out_block_width += col_edge / 2;
-    #ifdef DEBUG
+#ifdef DEBUG
     if (threadIdx.x == 0 && threadIdx.y == 0)
-        printf("cur_out_block_height %d cur_out_block_width %d\n",cur_out_block_height, cur_out_block_width);
-    #endif
+        printf("cur_out_block_height %d cur_out_block_width %d\n", cur_out_block_height, cur_out_block_width);
+#endif
     //这里映射到outtile
     int out_tile_thread_per_row = cur_out_block_width;
     int out_tile_row_start = (tid / out_tile_thread_per_row);
     int out_tile_col = tid % out_tile_thread_per_row;
     int out_tile_row_stride = blockDim.x * blockDim.y / out_tile_thread_per_row;// 32 / 4 = 8
 
-    
+
     float tmp[TMP_SIZE];
     for (int i = 0; i < 4 * outputChannel; i++)
     {
@@ -139,85 +149,94 @@ __global__ void _reluMaxPoll(type* input, type* output, int inputChannel, int in
     for (int oc = 0; oc < outputChannel; oc++)
     {
 
-            for (int i = 0; i < cur_out_block_height && (out_tile_row_start + i) < cur_out_block_height; i += out_tile_row_stride)
-            {
-                int tmp_pos = i / out_tile_row_stride + oc * (cur_out_block_height / out_tile_row_stride + 1);
-                float tmp_max = 0; //register
-                for (int ii = 0; ii < KERNEL_SIZE; ii++)
-                    for (int jj = 0; jj < KERNEL_SIZE; jj++)
-                    {
-                        tmp_max = max(s_in[(out_tile_row_start + i) * 2 + ii][out_tile_col * 2 + jj], tmp_max);
-                        // printf("row %d col %d in %f \n", (out_tile_row_start + i) * 2 + ii, out_tile_col * 2 + jj, s_in[(out_tile_row_start + i) * 2 + ii][out_tile_col * 2 + jj]);
-                    }
-                if (tmp_max > 0)
+        for (int i = 0; i < cur_out_block_height && (out_tile_row_start + i) < cur_out_block_height; i += out_tile_row_stride)
+        {
+            int tmp_pos = i / out_tile_row_stride + oc * (cur_out_block_height / out_tile_row_stride + 1);
+            float tmp_max = 0; //register
+            for (int ii = 0; ii < KERNEL_SIZE; ii++)
+                for (int jj = 0; jj < KERNEL_SIZE; jj++)
                 {
-                    tmp[tmp_pos] = tmp_max;
-                    #if DEBUG
-                    printf("tmp %f \n", tmp_max);
-                    #endif
+                    tmp_max = max(s_in[(out_tile_row_start + i) * 2 + ii][out_tile_col * 2 + jj], tmp_max);
+                    // printf("row %d col %d in %f \n", (out_tile_row_start + i) * 2 + ii, out_tile_col * 2 + jj, s_in[(out_tile_row_start + i) * 2 + ii][out_tile_col * 2 + jj]);
                 }
-                else tmp[tmp_pos] = 0;
-            }
-
-            //取下一个channellinput数据
-            if (oc + 1 < outputChannel)
+            if (tmp_max > 0)
             {
-                for (int i = 0; i < cur_in_block_height && (i + in_tile_row_start < cur_in_block_height); i += in_tile_row_stride)
+                tmp[tmp_pos] = tmp_max;
+#if DEBUG
+                printf("tmp %f \n", tmp_max);
+#endif
+            }
+            else tmp[tmp_pos] = 0;
+        }
+
+        //取下一个channellinput数据
+        if (oc + 1 < outputChannel)
+        {
+            for (int i = 0; i < cur_in_block_height && (i + in_tile_row_start < cur_in_block_height); i += in_tile_row_stride)
+            {
+                if (((begin_pos + (oc + 1) * inputColSize * inputRowSize + (in_tile_row_start + i) * inputColSize + in_tile_col)) >= inputRowSize * inputColSize * inputChannel)
                 {
-                    FETCH_FLOAT4(load_reg[0]) = 
-                        FETCH_FLOAT4(input[begin_pos + (oc + 1) * inputColSize * inputRowSize + (in_tile_row_start + i) * inputColSize + in_tile_col]);
-                    s_in[in_tile_row_start + i][in_tile_col] = load_reg[0];
-                    s_in[in_tile_row_start + i][in_tile_col + 1] = load_reg[1];
-                    s_in[in_tile_row_start + i][in_tile_col + 2] = load_reg[2];
-                    s_in[in_tile_row_start + i][in_tile_col + 3] = load_reg[3];
-                    //如果有多余的，不足4个
-                    if (in_tile_col + 2 * trans_ele_num > cur_in_block_width &&
-                        in_tile_col + trans_ele_num < cur_in_block_width)
+                    // printf("out the boundary %d of %d\n", (begin_pos + (oc + 1) * inputColSize * inputRowSize + (in_tile_row_start + i) * inputColSize + in_tile_col), inputRowSize * inputColSize * inputChannel);
+                    continue;
+                }
+                FETCH_FLOAT4(load_reg[0]) =
+                    FETCH_FLOAT4(input[begin_pos + (oc + 1) * inputColSize * inputRowSize + (in_tile_row_start + i) * inputColSize + in_tile_col]);
+                s_in[in_tile_row_start + i][in_tile_col] = load_reg[0];
+                s_in[in_tile_row_start + i][in_tile_col + 1] = load_reg[1];
+                s_in[in_tile_row_start + i][in_tile_col + 2] = load_reg[2];
+                s_in[in_tile_row_start + i][in_tile_col + 3] = load_reg[3];
+                //如果有多余的，不足4个
+                if (in_tile_col + 2 * trans_ele_num > cur_in_block_width &&
+                    in_tile_col + trans_ele_num < cur_in_block_width)
+                {
+                    for (int k = in_tile_col + trans_ele_num; k < cur_in_block_width; k++)
                     {
-                        for (int k = in_tile_col + trans_ele_num; k < cur_in_block_width; k++)
+                        if ((begin_pos + (oc + 1) * inputRowSize * inputColSize + (in_tile_row_start + i) * inputColSize + k) >= inputRowSize * inputColSize * inputChannel)
+                            continue;
+
+                        s_in[in_tile_row_start + i][k] = input[begin_pos + (oc + 1) * inputRowSize * inputColSize + (in_tile_row_start + i) * inputColSize + k];
+                    }
+                }
+
+            }
+#if DEBUG
+            if (oc + 1 < inputChannel)
+                if (blockIdx.x == 2 && blockIdx.y == 0 && threadIdx.x == 0 && threadIdx.y == 0) // 16 8
+                {
+                    for (int i = 0; i < cur_in_block_height; i++)
+                    {
+                        for (int j = 0; j < cur_in_block_width; j++)
                         {
-                            s_in[in_tile_row_start + i][k] = input[begin_pos + (oc + 1) * inputRowSize * inputColSize + (in_tile_row_start + i) * inputColSize + k];
+                            printf("bIdx %d (%d %d) %.2f|%.2f\n", blockIdx.x, i, j, s_in[i][j], input[begin_pos + (oc + 1) * inputRowSize * inputColSize + OFFSET(i, j, inputColSize)]);
                         }
                     }
-
                 }
-                #if DEBUG
-                if (oc + 1 < inputChannel)
-                    if (blockIdx.x == 2 && blockIdx.y == 0 && threadIdx.x == 0 && threadIdx.y == 0) // 16 8
-                    {
-                        for (int i = 0; i < cur_in_block_height; i++)
-                        {
-                            for (int j = 0; j < cur_in_block_width; j++)
-                            {
-                                printf("bIdx %d (%d %d) %.2f|%.2f\n", blockIdx.x, i, j, s_in[i][j], input[begin_pos + (oc + 1) * inputRowSize * inputColSize + OFFSET(i, j, inputColSize)]);
-                            }
-                        }
-                    }
-                #endif
-            }
+#endif
+        }
 
-            
-        
+
+
         //数据写回去
 
         for (int i = 0; i < cur_out_block_height && (i + out_tile_row_start) < cur_out_block_height; i += out_tile_row_stride)
         {
             int tmp_pos = i / out_tile_row_stride + oc * (cur_out_block_height / out_tile_row_stride + 1);
             int out_pos = oc * outputRowSize * outputColSize +
-                cur_out_block_height * blockIdx.y * outputColSize + 
+                cur_out_block_height * blockIdx.y * outputColSize +
                 blockIdx.x * cur_out_block_width +
-                (out_tile_row_start + i) * outputColSize + 
+                (out_tile_row_start + i) * outputColSize +
                 out_tile_col;
+            if (out_pos >= outputRowSize * outputChannel * outputColSize) continue;
             output[out_pos] = tmp[tmp_pos];
-            #ifdef DEBUG
-            printf("tmp[%d] = %f, output[%d]\n",tmp_pos, tmp[tmp_pos], out_pos);
-            #endif
+#ifdef DEBUG
+            printf("tmp[%d] = %f, output[%d]\n", tmp_pos, tmp[tmp_pos], out_pos);
+#endif
         }
 
         //prefetch the next inputchannel data, in fact in = 0
         __syncthreads();
     }
-    
+
 }
 
 void reluMaxPool(float* d_input, int inputRowSize, int inputColSize, int inputChannel, \
@@ -236,20 +255,20 @@ void reluMaxPool(float* d_input, int inputRowSize, int inputColSize, int inputCh
     int gridx = outputColSize / BLOCK_WIDTH, gridy = outputRowSize / BLOCK_HEIGHT;
     gridx = gridx <= 0 ? 1 : gridx;
     gridy = gridy <= 0 ? 1 : gridy;
-    #ifdef DEBUG
+#ifdef DEBUG
     printf("grid %d %d, block %d %d\n", gridx, gridy, BLOCK_WIDTH, BLOCK_HEIGHT);
-    #endif
+#endif
     dim3 grid(gridx, gridy);
     dim3 block(BLOCK_WIDTH, BLOCK_HEIGHT);
     // printf("1111\n");
     // f1 << <1, 200 >> > (1);
     // cudaDeviceSynchronize();
-    _reluMaxPoll< BLOCK_HEIGHT, BLOCK_WIDTH, KERNEL_SIZE, TMP_SIZE> << <grid, block, 0, stream >> > (d_input, d_output, inputChannel, inputRowSize, inputColSize,
+    _reluMaxPoll< BLOCK_HEIGHT, BLOCK_WIDTH, KERNEL_SIZE, TMP_SIZE> << <grid, block, 2000, stream >> > (d_input, d_output, inputChannel, inputRowSize, inputColSize,
         outputChannel, outputRowSize, outputColSize,
         2);
     cudaError_t cudaError = cudaGetLastError();
     if (cudaError != cudaSuccess) {
-        
+
         fprintf(stderr, "CUDA error111: %s %d\n", cudaGetErrorString(cudaError), inputRowSize);
         // 处理错误
     }
@@ -288,7 +307,7 @@ void reluMaxPool(float* d_input, int inputRowSize, int inputColSize, int inputCh
 #endif
 }
 
-        
+
 template <
     const int BLOCK_HEIGHT, const int BLOCK_WIDTH, const int KERNEL_HEIGHT, const int KERNEL_WIDTH, const int MALLOC_TEMP_SIZE>
 __global__ void _conv2d(element_type* in, element_type* out, element_type* kernel, element_type* kernelBias, int batch_size,
@@ -310,7 +329,7 @@ __global__ void _conv2d(element_type* in, element_type* out, element_type* kerne
     // if (tid==0)
     //     printf("(%d %d)\n", blockIdx.y, blockIdx.x);
 
-    
+
     // __shared__ float s_in[BLOCK_HEIGHT + KERNEL_HEIGHT - 1][BLOCK_WIDTH + KERNEL_WIDTH - 1];
     __shared__ float s_kernel[1 + KERNEL_HEIGHT][1 + KERNEL_WIDTH]; // 开奇数内存会出错
     __shared__ float s_in[(BLOCK_HEIGHT + KERNEL_HEIGHT) * 2][(BLOCK_WIDTH + KERNEL_WIDTH) * 2];       // 要满足修正的尺寸
@@ -324,10 +343,10 @@ __global__ void _conv2d(element_type* in, element_type* out, element_type* kerne
     int single_trans_ele_num = 4;                               // 线程一次转移的数据数
     int cur_in_block_height = BLOCK_HEIGHT + KERNEL_HEIGHT - 1, // 读入in的block height，读入in的block的row大小
         cur_in_block_width = BLOCK_WIDTH + KERNEL_WIDTH - 1,    // 读入in的block width，读入in的block的col大小
-        in_tile_thread_per_row,                                 
-        in_tile_row_start,                                      
-        in_tile_col,                                            
-        in_tile_row_stride;                                    
+        in_tile_thread_per_row,
+        in_tile_row_start,
+        in_tile_col,
+        in_tile_row_stride;
 
     // 如果是in边缘的block，需要多读几个数据，相当于处理边界情况
     if (blockIdx.y == row_boundary)
@@ -368,8 +387,8 @@ __global__ void _conv2d(element_type* in, element_type* out, element_type* kerne
         }
     }
 
-   
-    if ( threadIdx.y < KERNEL_HEIGHT && threadIdx.x == 0)
+
+    if (threadIdx.y < KERNEL_HEIGHT && threadIdx.x == 0)
     {
         for (int j = 0; j < KERNEL_WIDTH; j++)
         {
@@ -378,17 +397,17 @@ __global__ void _conv2d(element_type* in, element_type* out, element_type* kerne
     }
 
     __syncthreads();
-   
+
 
 
     // 逐个channel计算 一个线程负责block中的一个元素计算
- 
+
     int cur_out_block_height = blockDim.y,
-        cur_out_block_width = blockDim.x,  
-        out_tile_thread_per_row,             
-        out_tile_row_start,                  
-        out_tile_col,                       
-        out_tile_row_stride;                 
+        cur_out_block_width = blockDim.x,
+        out_tile_thread_per_row,
+        out_tile_row_start,
+        out_tile_col,
+        out_tile_row_stride;
     if (blockIdx.y == row_boundary)
     {
         cur_out_block_height = BLOCK_HEIGHT + row_edge;
@@ -398,12 +417,12 @@ __global__ void _conv2d(element_type* in, element_type* out, element_type* kerne
         cur_out_block_width = BLOCK_WIDTH + col_edge;
     }
 
-    out_tile_thread_per_row = cur_out_block_width ;
+    out_tile_thread_per_row = cur_out_block_width;
     out_tile_row_start = tid / out_tile_thread_per_row;
-    out_tile_col = tid % out_tile_thread_per_row ;
+    out_tile_col = tid % out_tile_thread_per_row;
     out_tile_row_stride = thread_num_per_block / out_tile_thread_per_row;
 
-    float tmp[temp_size]; 
+    float tmp[temp_size];
     for (int i = 0; i < temp_size; i++)
         tmp[i] = 0;
 
@@ -418,7 +437,7 @@ __global__ void _conv2d(element_type* in, element_type* out, element_type* kerne
             for (int i = 0; i < cur_out_block_height && (out_tile_row_start + i) < cur_out_block_height;
                 i += out_tile_row_stride)
             {
-                
+
                 // 计算线程负责的元素 同一个oc的缓存顺序排列
                 // 不同oc偏移一个cur_out_block_height / out_tile_row_stride + 1的位置
                 temp_pos = i / out_tile_row_stride +
@@ -430,7 +449,7 @@ __global__ void _conv2d(element_type* in, element_type* out, element_type* kerne
                         tmp[temp_pos] += s_in[out_tile_row_start + i + ii][out_tile_col + jj] * s_kernel[ii][jj];
                     }
                 }
-                
+
             }
             // 读取下一个in channel和对应kernel的数据
             if (ic + 1 < inputChannel)
@@ -453,7 +472,7 @@ __global__ void _conv2d(element_type* in, element_type* out, element_type* kerne
                         }
                     }
                 }
-                if ( threadIdx.y < KERNEL_HEIGHT && threadIdx.x == 0)
+                if (threadIdx.y < KERNEL_HEIGHT && threadIdx.x == 0)
                 {
                     for (int j = 0; j < KERNEL_WIDTH; j++)
                     {
@@ -468,7 +487,7 @@ __global__ void _conv2d(element_type* in, element_type* out, element_type* kerne
         // 读取下一个kernel channel数据
         if (oc + 1 < outputChannel)
         {
-            if ( threadIdx.y < KERNEL_HEIGHT && threadIdx.x == 0)
+            if (threadIdx.y < KERNEL_HEIGHT && threadIdx.x == 0)
             {
                 for (int j = 0; j < KERNEL_WIDTH; j++)
                 {
@@ -481,13 +500,13 @@ __global__ void _conv2d(element_type* in, element_type* out, element_type* kerne
         int i = 0;
         while (i < cur_out_block_height && (out_tile_row_start + i) < cur_out_block_height)
         {
-                out_pos = oc * outputRowSize * outputColSize +
-                    blockIdx.y * BLOCK_HEIGHT * outputColSize + blockIdx.x * BLOCK_WIDTH +
-                    OFFSET(out_tile_row_start + i, out_tile_col, outputColSize);
-                temp_pos = i / out_tile_row_stride +
-                    oc * (cur_out_block_height / out_tile_row_stride + 1);
-                out[out_pos] = tmp[temp_pos] + kernelBias[oc];
-            
+            out_pos = oc * outputRowSize * outputColSize +
+                blockIdx.y * BLOCK_HEIGHT * outputColSize + blockIdx.x * BLOCK_WIDTH +
+                OFFSET(out_tile_row_start + i, out_tile_col, outputColSize);
+            temp_pos = i / out_tile_row_stride +
+                oc * (cur_out_block_height / out_tile_row_stride + 1);
+            out[out_pos] = tmp[temp_pos] + kernelBias[oc];
+
             i += out_tile_row_stride;
         }
         // 读取下一个in channel数据
@@ -502,7 +521,7 @@ __global__ void _conv2d(element_type* in, element_type* out, element_type* kerne
             s_in[in_tile_row_start + i][in_tile_col + 2] = load_reg[2];
             s_in[in_tile_row_start + i][in_tile_col + 3] = load_reg[3];
             if (in_tile_col + 2 * single_trans_ele_num > cur_in_block_width &&
-                cur_in_block_width > in_tile_col + 1 * single_trans_ele_num) 
+                cur_in_block_width > in_tile_col + 1 * single_trans_ele_num)
             {
                 for (int j = in_tile_col + 1 * single_trans_ele_num; j < cur_in_block_width; j++)
                 {
@@ -513,8 +532,8 @@ __global__ void _conv2d(element_type* in, element_type* out, element_type* kerne
     }
 }
 
-void conv2d(float*  d_input, int inputRowSize, int inputColSize, int inputChannel, \
-    float*  d_kernel, float* d_kernelBias, int kernelRowSize, int kernelColSize, \
+void conv2d(float* d_input, int inputRowSize, int inputColSize, int inputChannel, \
+    float* d_kernel, float* d_kernelBias, int kernelRowSize, int kernelColSize, \
     float* d_output, int outputRowSize, int outputColSize, int outputChannel, cudaStream_t stream)
 {
 #if 1
@@ -524,18 +543,18 @@ void conv2d(float*  d_input, int inputRowSize, int inputColSize, int inputChanne
     // int kernelSize = kernelRowSize * kernelColSize * inputChannel * outputChannel * sizeof(float);
     // int kernelBiasSize = outputChannel * sizeof(float);
     dim3 dimGrid(outputColSize / BLOCK_WIDTH, outputRowSize / BLOCK_HEIGHT);
-    dim3 dimBlock(BLOCK_WIDTH , BLOCK_HEIGHT );
+    dim3 dimBlock(BLOCK_WIDTH, BLOCK_HEIGHT);
     // checkCudaErrors(cudaMalloc(&d_input, inputSize));
     // checkCudaErrors(cudaMalloc(&d_output, outputSize));
     // checkCudaErrors(cudaMalloc(&d_kernel, kernelSize));
     // checkCudaErrors(cudaMalloc(&d_kernelBias, kernelBiasSize));
-    
+
     // checkCudaErrors(cudaMemcpy(d_input, input.data(), inputSize, cudaMemcpyHostToDevice));
     // checkCudaErrors(cudaMemcpy(d_kernel, kernel.data(), kernelSize, cudaMemcpyHostToDevice));
     // checkCudaErrors(cudaMemcpy(d_kernelBias, kernelBias.data(), kernelBiasSize, cudaMemcpyHostToDevice));
 
     _conv2d<BLOCK_HEIGHT, BLOCK_WIDTH, KERNEL_HEIGHT, KERNEL_WIDTH, MALLOC_TEMP_SIZE>
-        << <dimGrid, dimBlock, 0, stream >> > (d_input, d_output, d_kernel, d_kernelBias,
+        << <dimGrid, dimBlock, 2000, stream >> > (d_input, d_output, d_kernel, d_kernelBias,
             N, inputChannel, inputRowSize, inputColSize, outputChannel, outputRowSize, outputColSize, kernelRowSize, kernelColSize);
     // cudaDeviceSynchronize();
     // checkCudaErrors(cudaMemcpy(output.data(), d_output, outputSize, cudaMemcpyDeviceToHost));
@@ -696,7 +715,7 @@ void poolReluConv1(float* input, int inputRowSize, int inputColSize, \
     conv2d(input, inputRowSize, inputColSize, inputChannel, \
         kernelWeight, kernelConv1Bias, kernelConv1Size, kernelConv1Size, \
         outputTmp, inputRowSize - kernelConv1Size + 1, inputColSize - kernelConv1Size + 1, outputChannel, stream);
-    
+
     inputRowSize = inputRowSize - kernelConv1Size + 1;
     inputColSize = inputColSize - kernelConv1Size + 1;
     outputRowSize = inputRowSize / kernelMaxPoolSize;
@@ -722,7 +741,7 @@ __device__ __forceinline__ float warpReduceSum(float sum) {
     return sum;
 }
 
-__global__ void reluGemv( float* __restrict__ A, float* __restrict__ ABias, float* __restrict__ x, float* __restrict__ y, const int M,const int N) {
+__global__ void reluGemv(float* __restrict__ A, float* __restrict__ ABias, float* __restrict__ x, float* __restrict__ y, const int M, const int N) {
     // Block index
     int bx = blockIdx.x;
 
@@ -743,6 +762,7 @@ __global__ void reluGemv( float* __restrict__ A, float* __restrict__ ABias, floa
 #pragma unroll
         for (int i = 0; i < kIteration; i++) {
             int current_col_vec = (i * warp_size + laneId);
+            if (current_col_vec * 4 >= N) continue;
             float4 current_val = reinterpret_cast<float4*>(A)[current_col_vec];
             float4 current_x = reinterpret_cast<float4*>(x)[current_col_vec];
             res += current_val.x * current_x.x;
@@ -751,7 +771,7 @@ __global__ void reluGemv( float* __restrict__ A, float* __restrict__ ABias, floa
             res += current_val.w * current_x.w;
         }
         res = warpReduceSum<warp_size>(res);
-        if (laneId == 0){
+        if (laneId == 0) {
             res += ABias[current_row];
             if (res >= 0)
                 y[current_row] = res;
@@ -763,8 +783,8 @@ __global__ void reluGemv( float* __restrict__ A, float* __restrict__ ABias, floa
     }
 }
 
-__global__ void reluGemv_final( float* __restrict__ A, float* __restrict__ ABias, float* __restrict__ x, float* __restrict__ y, const int M,const int N,
-                                int* predict, int idx) {
+__global__ void reluGemv_final(float* __restrict__ A, float* __restrict__ ABias, float* __restrict__ x, float* __restrict__ y, const int M, const int N,
+    int* predict, int idx) {
     // Block index
     int bx = blockIdx.x;
 
@@ -785,6 +805,7 @@ __global__ void reluGemv_final( float* __restrict__ A, float* __restrict__ ABias
 #pragma unroll
         for (int i = 0; i < kIteration; i++) {
             int current_col_vec = (i * warp_size + laneId);
+            if (current_col_vec * 4 >= N) continue;
             float4 current_val = reinterpret_cast<float4*>(A)[current_col_vec];
             float4 current_x = reinterpret_cast<float4*>(x)[current_col_vec];
             res += current_val.x * current_x.x;
@@ -793,7 +814,7 @@ __global__ void reluGemv_final( float* __restrict__ A, float* __restrict__ ABias
             res += current_val.w * current_x.w;
         }
         res = warpReduceSum<warp_size>(res);
-        if (laneId == 0){
+        if (laneId == 0) {
             res += ABias[current_row];
             if (res >= 0)
                 y[current_row] = res;
@@ -803,7 +824,7 @@ __global__ void reluGemv_final( float* __restrict__ A, float* __restrict__ ABias
         if (tid == 0)
         {
             int max_idx = 0, tmp_max = 0;
-            for (int i = 0; i < 10; i ++ )
+            for (int i = 0; i < 10; i++)
                 if (tmp_max < y[i])
                 {
                     tmp_max = y[i];
@@ -820,26 +841,26 @@ __global__ void reluGemv_final( float* __restrict__ A, float* __restrict__ ABias
 
 void reluSPMV(float* d_input, int inputRowSize, \
     float* d_kernel, int kernelRowSize, int kernelColSize, \
-    float* d_kernelBias,\
+    float* d_kernelBias, \
     float* d_output, int outputRowSize, cudaStream_t stream)
 {
-    #if 1
+#if 1
 
     dim3 dimGrid((kernelRowSize + 3) / 4);
     dim3 dimBlock(32, 4);
-    reluGemv<< < dimGrid, dimBlock, 0, stream>> > (d_kernel, d_kernelBias, d_input, d_output, kernelRowSize, kernelColSize);
+    reluGemv << < dimGrid, dimBlock, 2000, stream >> > (d_kernel, d_kernelBias, d_input, d_output, kernelRowSize, kernelColSize);
 
-    
+
 #else
     for (int i = 0; i < outputRowSize; i++)
     {
-            double tmp = 0;
-            for (int k = 0; k < inputRowSize; k++)
-                tmp += kernel[i * kernelColSize + k] * input[k];
-            tmp += kernelBias[i];
-            if (tmp >= 0) output[i] = tmp;
-            else output[i] = 0;
-            
+        double tmp = 0;
+        for (int k = 0; k < inputRowSize; k++)
+            tmp += kernel[i * kernelColSize + k] * input[k];
+        tmp += kernelBias[i];
+        if (tmp >= 0) output[i] = tmp;
+        else output[i] = 0;
+
     }
 #endif
 }
@@ -847,26 +868,26 @@ void reluSPMV(float* d_input, int inputRowSize, \
 
 void reluSPMV_final(float* d_input, int inputRowSize, \
     float* d_kernel, int kernelRowSize, int kernelColSize, \
-    float* d_kernelBias,\
+    float* d_kernelBias, \
     float* d_output, int outputRowSize, int* predict, int idx, cudaStream_t stream)
 {
-    #if 1
+#if 1
 
     dim3 dimGrid((kernelRowSize + 3) / 4);
     dim3 dimBlock(32, 4);
-    reluGemv_final<< < dimGrid, dimBlock, 0, stream >> > (d_kernel, d_kernelBias, d_input, d_output, kernelRowSize, kernelColSize, predict, idx);
+    reluGemv_final << < dimGrid, dimBlock, 2000, stream >> > (d_kernel, d_kernelBias, d_input, d_output, kernelRowSize, kernelColSize, predict, idx);
 
-    
+
 #else
     for (int i = 0; i < outputRowSize; i++)
     {
-            double tmp = 0;
-            for (int k = 0; k < inputRowSize; k++)
-                tmp += kernel[i * kernelColSize + k] * input[k];
-            tmp += kernelBias[i];
-            if (tmp >= 0) output[i] = tmp;
-            else output[i] = 0;
-            
+        double tmp = 0;
+        for (int k = 0; k < inputRowSize; k++)
+            tmp += kernel[i * kernelColSize + k] * input[k];
+        tmp += kernelBias[i];
+        if (tmp >= 0) output[i] = tmp;
+        else output[i] = 0;
+
     }
 #endif
 }
@@ -887,16 +908,16 @@ int maxT(std::vector<float> A)
 // #define THREAD_PER_BLOCK 256
 #define WARP_SIZE 32
 
-__device__ void warpReduce(volatile float* cache, unsigned int tid){
-    cache[tid]+=cache[tid+32];
-    cache[tid]+=cache[tid+16];
-    cache[tid]+=cache[tid+8];
-    cache[tid]+=cache[tid+4];
-    cache[tid]+=cache[tid+2];
-    cache[tid]+=cache[tid+1];
+__device__ void warpReduce(volatile float* cache, unsigned int tid) {
+    cache[tid] += cache[tid + 32];
+    cache[tid] += cache[tid + 16];
+    cache[tid] += cache[tid + 8];
+    cache[tid] += cache[tid + 4];
+    cache[tid] += cache[tid + 2];
+    cache[tid] += cache[tid + 1];
 }
 
-__global__ void reduce(int *predict,int *labels, int *sum, int N){
+__global__ void reduce(int* predict, int* labels, int* sum, int N) {
     __shared__ float sdata[256];
 
     // each thread loads one element from global to shared mem
@@ -904,13 +925,13 @@ __global__ void reduce(int *predict,int *labels, int *sum, int N){
     unsigned int i = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
     // printf("predict[i] =%d  predict[i + blockDim.x] %d\n", predict[i], predict[i + blockDim.x]);
     if (i < N)
-        sdata[tid] = (predict[i] == labels[i]) ;
+        sdata[tid] = (predict[i] == labels[i]);
     if (i + blockDim.x < N)
         sdata[tid] += (predict[i + blockDim.x] == labels[i + blockDim.x]);
     __syncthreads();
 
     // do reduction in shared mem
-    for (unsigned int s=blockDim.x/2; s>32; s>>=1) {
+    for (unsigned int s = blockDim.x / 2; s > 32; s >>= 1) {
         if (tid < s) {
             sdata[tid] += sdata[tid + s];
         }
@@ -923,29 +944,29 @@ __global__ void reduce(int *predict,int *labels, int *sum, int N){
 }
 
 int check(int* d_predict, int* d_labels, int N)
-{    
+{
     int THREAD_PER_BLOCK = 256;
-    int NUM_PER_BLOCK = 2* 256;
+    int NUM_PER_BLOCK = 2 * 256;
     // printf("N %d\n", N);
     int block_num = (N + NUM_PER_BLOCK - 1) / NUM_PER_BLOCK;
-    int *d_sum, *sum = (int*)malloc(sizeof(int) * block_num);
+    int* d_sum, * sum = (int*)malloc(sizeof(int) * block_num);
 
     // printf("N %d. block_num %d\n", N, block_num);
     cudaMalloc(&d_sum, block_num * sizeof(int));
-    
-    dim3 Grid( block_num, 1);
-    dim3 Block( THREAD_PER_BLOCK, 1);
 
-    reduce<<<Grid,Block>>>(d_predict, d_labels, d_sum, N);
-    cudaMemcpy(sum, d_sum, block_num*sizeof(int),cudaMemcpyDeviceToHost);
+    dim3 Grid(block_num, 1);
+    dim3 Block(THREAD_PER_BLOCK, 1);
+
+    reduce << <Grid, Block >> > (d_predict, d_labels, d_sum, N);
+    cudaMemcpy(sum, d_sum, block_num * sizeof(int), cudaMemcpyDeviceToHost);
     int ans = 0;
-    for (int i = 0; i < block_num; i ++ )
+    for (int i = 0; i < block_num; i++)
     {
         ans += sum[i];
         // printf("sum[%d] = %d\n", i, sum[i]);
     }
     return ans;
-    
+
 }
 void init_ij(std::vector<float>& A, int n, int m, int c)
 {
@@ -1021,14 +1042,14 @@ int main(int argc, char* argv[]) {
     // 参数加载
     // std::cout << fc3_bias.size() << std::endl;
         // std::vector<float> output1(6 * 24 * 24, 0);
-    float* d_output1, *d_output2, *d_output3, *d_output4, *d_output5, *d_input;
-    float* d_conv1_weight, *d_conv1_bias, *d_conv2_weight, *d_conv2_bias, *d_fc1_weight,
-        *d_fc1_bias, *d_fc2_weight, *d_fc2_bias, *d_fc3_weight, *d_fc3_bias;
+    float* d_output1, * d_output2, * d_output3, * d_output4, * d_output5, * d_input;
+    float* d_conv1_weight, * d_conv1_bias, * d_conv2_weight, * d_conv2_bias, * d_fc1_weight,
+        * d_fc1_bias, * d_fc2_weight, * d_fc2_bias, * d_fc3_weight, * d_fc3_bias;
     float* outputTmp;
-    int *d_predict, *d_labels;
-    int *predict = (int*)malloc(sizeof(int) * labels.size());
-    
-    const int nStreams = 1; 
+    int* d_predict, * d_labels;
+    int* predict = (int*)malloc(sizeof(int) * labels.size());
+
+    const int nStreams = 1;
     cudaStream_t streams[nStreams];
     for (int i = 0; i < nStreams; i++) {
         cudaStreamCreate(&streams[i]);
@@ -1046,25 +1067,25 @@ int main(int argc, char* argv[]) {
     // int d_output3_size = 120 ;
     // int d_output4_size = 84 ;
     // int d_output5_size = 10 ;
-    checkCudaErrors(cudaMalloc(&outputTmp, sizeof(float) * (24) * (24) * 16 * nStreams * 4));
-    checkCudaErrors(cudaMalloc(&d_input, 1 * 28 * 28 * sizeof(float) * nStreams * 4));
-    checkCudaErrors(cudaMalloc(&d_output1, 6 * 24 * 24 * sizeof(float) * nStreams * 4));
-    checkCudaErrors(cudaMalloc(&d_output2, 6 * 24 * 24 * sizeof(float) * nStreams * 4));
-    checkCudaErrors(cudaMalloc(&d_output3, 120 * sizeof(float) * nStreams * 4));
-    checkCudaErrors(cudaMalloc(&d_output4, 84 * sizeof(float) * nStreams * 4));
-    checkCudaErrors(cudaMalloc(&d_output5, 10 * sizeof(float) * nStreams * 4));
-    checkCudaErrors(cudaMalloc(&d_predict, sizeof(int) * labels.size()));
-    checkCudaErrors(cudaMalloc(&d_labels, sizeof(int) * labels.size()));
-    checkCudaErrors(cudaMalloc(&d_conv1_weight, conv1_weight.size() * sizeof(float)));
-    checkCudaErrors(cudaMalloc(&d_conv1_bias, conv1_bias.size() * sizeof(float)));
-    checkCudaErrors(cudaMalloc(&d_conv2_weight, conv2_weight.size() * sizeof(float)));
-    checkCudaErrors(cudaMalloc(&d_conv2_bias, conv2_bias.size() * sizeof(float)));
-    checkCudaErrors(cudaMalloc(&d_fc1_weight, fc1_weight.size() * sizeof(float)));
-    checkCudaErrors(cudaMalloc(&d_fc1_bias, fc1_bias.size() * sizeof(float)));
-    checkCudaErrors(cudaMalloc(&d_fc2_weight, fc2_weight.size() * sizeof(float)));
-    checkCudaErrors(cudaMalloc(&d_fc2_bias, fc2_bias.size() * sizeof(float)));
-    checkCudaErrors(cudaMalloc(&d_fc3_weight, fc3_weight.size() * sizeof(float)));
-    checkCudaErrors(cudaMalloc(&d_fc3_bias, fc3_bias.size() * sizeof(float)));
+    cudaMalloc(&outputTmp, sizeof(float) * (24) * (24) * 16 * nStreams * 4);
+    cudaMalloc(&d_input, 1 * 28 * 28 * sizeof(float) * nStreams * 4);
+    cudaMalloc(&d_output1, 6 * 24 * 24 * sizeof(float) * nStreams * 4);
+    cudaMalloc(&d_output2, 6 * 24 * 24 * sizeof(float) * nStreams * 4);
+    cudaMalloc(&d_output3, 120 * sizeof(float) * nStreams * 4);
+    cudaMalloc(&d_output4, 84 * sizeof(float) * nStreams * 4);
+    cudaMalloc(&d_output5, 10 * sizeof(float) * nStreams * 4);
+    cudaMalloc(&d_predict, sizeof(int) * labels.size());
+    cudaMalloc(&d_labels, sizeof(int) * labels.size());
+    cudaMalloc(&d_conv1_weight, conv1_weight.size() * sizeof(float));
+    cudaMalloc(&d_conv1_bias, conv1_bias.size() * sizeof(float));
+    cudaMalloc(&d_conv2_weight, conv2_weight.size() * sizeof(float));
+    cudaMalloc(&d_conv2_bias, conv2_bias.size() * sizeof(float));
+    cudaMalloc(&d_fc1_weight, fc1_weight.size() * sizeof(float));
+    cudaMalloc(&d_fc1_bias, fc1_bias.size() * sizeof(float));
+    cudaMalloc(&d_fc2_weight, fc2_weight.size() * sizeof(float));
+    cudaMalloc(&d_fc2_bias, fc2_bias.size() * sizeof(float));
+    cudaMalloc(&d_fc3_weight, fc3_weight.size() * sizeof(float));
+    cudaMalloc(&d_fc3_bias, fc3_bias.size() * sizeof(float));
     std::vector<float> output2(6 * 24 * 24, 0);
     std::vector<float> output3(120, 0);
     std::vector<float> output4(84, 0);
@@ -1072,17 +1093,17 @@ int main(int argc, char* argv[]) {
     std::vector<float> input(28 * 28, 0);
     // init_ij(input, 28, 28, 1);
 
-    checkCudaErrors(cudaMemcpy(d_labels, labels.data(), labels.size() * sizeof(int), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_conv1_weight, conv1_weight.data(), sizeof(float) * conv1_weight.size(), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_conv1_bias, conv1_bias.data(), sizeof(float) * conv1_bias.size(), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_conv2_weight, conv2_weight.data(), sizeof(float) * conv2_weight.size(), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_conv2_bias, conv2_bias.data(), sizeof(float) * conv2_bias.size(), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_fc1_weight, fc1_weight.data(), sizeof(float) * fc1_weight.size(), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_fc2_weight, fc2_weight.data(), sizeof(float) * fc2_weight.size(), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_fc3_weight, fc3_weight.data(), sizeof(float) * fc3_weight.size(), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_fc1_bias, fc1_bias.data(), sizeof(float) * fc1_bias.size(), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_fc2_bias, fc2_bias.data(), sizeof(float) * fc2_bias.size(), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_fc3_bias, fc3_bias.data(), sizeof(float) * fc3_bias.size(), cudaMemcpyHostToDevice));
+    cudaMemcpy(d_labels, labels.data(), labels.size() * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_conv1_weight, conv1_weight.data(), sizeof(float) * conv1_weight.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_conv1_bias, conv1_bias.data(), sizeof(float) * conv1_bias.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_conv2_weight, conv2_weight.data(), sizeof(float) * conv2_weight.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_conv2_bias, conv2_bias.data(), sizeof(float) * conv2_bias.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_fc1_weight, fc1_weight.data(), sizeof(float) * fc1_weight.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_fc2_weight, fc2_weight.data(), sizeof(float) * fc2_weight.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_fc3_weight, fc3_weight.data(), sizeof(float) * fc3_weight.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_fc1_bias, fc1_bias.data(), sizeof(float) * fc1_bias.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_fc2_bias, fc2_bias.data(), sizeof(float) * fc2_bias.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_fc3_bias, fc3_bias.data(), sizeof(float) * fc3_bias.size(), cudaMemcpyHostToDevice);
 
     int sum = 0;
     for (int t = 0; t < images.size(); t++) {
@@ -1108,81 +1129,81 @@ int main(int argc, char* argv[]) {
 
     // printf("input:\n");
     // printTensor(input, 28, 28, 1);
-    int stream_tid = t % nStreams;
-    cudaMemcpyAsync(d_input + d_input_size * stream_tid, images[t].data(), sizeof(float) * 28 * 28, cudaMemcpyHostToDevice, streams[stream_tid]);
+        int stream_tid = t % nStreams;
+        cudaMemcpyAsync(d_input + d_input_size * stream_tid, images[t].data(), sizeof(float) * 28 * 28, cudaMemcpyHostToDevice, streams[stream_tid]);
 
-    poolReluConv1(d_input + d_input_size * stream_tid, 28, 28, \
-        d_conv1_weight, 1, 6, 5, \
-        d_conv1_bias, 2, \
-        d_output1 + d_output1_size * stream_tid, 12, 12,
-        outputTmp + outputTmp_size * stream_tid,
-        streams[stream_tid]);
+        poolReluConv1(d_input + d_input_size * stream_tid, 28, 28, \
+            d_conv1_weight, 1, 6, 5, \
+            d_conv1_bias, 2, \
+            d_output1 + d_output1_size * stream_tid, 12, 12,
+            outputTmp + outputTmp_size * stream_tid,
+            streams[stream_tid]);
 
-    // printf("--------------output1--------------\n");
-    // printTensor(output1, 12, 12, 6);
+        // printf("--------------output1--------------\n");
+        // printTensor(output1, 12, 12, 6);
 
-    poolReluConv1(d_output1 + d_output1_size * stream_tid, 12, 12, \
-        d_conv2_weight, 6, 16, 5, \
-        d_conv2_bias, 2, \
-        d_output2 + d_output2_size * stream_tid, 4, 4,
-        outputTmp + outputTmp_size * stream_tid,
-        streams[stream_tid]);
-    // cudaMemcpy(output2.data(), d_output2, sizeof(float) * 6 * 24 * 24, cudaMemcpyDeviceToHost);
+        poolReluConv1(d_output1 + d_output1_size * stream_tid, 12, 12, \
+            d_conv2_weight, 6, 16, 5, \
+            d_conv2_bias, 2, \
+            d_output2 + d_output2_size * stream_tid, 4, 4,
+            outputTmp + outputTmp_size * stream_tid,
+            streams[stream_tid]);
+        // cudaMemcpy(output2.data(), d_output2, sizeof(float) * 6 * 24 * 24, cudaMemcpyDeviceToHost);
 
-    // printf("output2\n");
-    // printTensor(output2, 4, 4, 16);
+        // printf("output2\n");
+        // printTensor(output2, 4, 4, 16);
 
-    reluSPMV(d_output2 + d_output2_size * stream_tid, 256, \
-        d_fc1_weight, 120, 256, \
-        d_fc1_bias, \
-        d_output3 + d_output3_size * stream_tid, 120,
-        streams[stream_tid]);
+        reluSPMV(d_output2 + d_output2_size * stream_tid, 256, \
+            d_fc1_weight, 120, 256, \
+            d_fc1_bias, \
+            d_output3 + d_output3_size * stream_tid, 120,
+            streams[stream_tid]);
 
-    // printf("output3\n");
-    // printTensor(output3, 120, 1, 1);
+        // printf("output3\n");
+        // printTensor(output3, 120, 1, 1);
 
-    reluSPMV(d_output3 + d_output3_size * stream_tid, 120, \
-        d_fc2_weight, 84, 120, \
-        d_fc2_bias, \
-        d_output4 + d_output4_size * stream_tid, 84,
-        streams[stream_tid]);
-    // printf("output4\n");
-    // printTensor(output4, 84, 1, 1);
+        reluSPMV(d_output3 + d_output3_size * stream_tid, 120, \
+            d_fc2_weight, 84, 120, \
+            d_fc2_bias, \
+            d_output4 + d_output4_size * stream_tid, 84,
+            streams[stream_tid]);
+        // printf("output4\n");
+        // printTensor(output4, 84, 1, 1);
 
-    reluSPMV_final(d_output4 + d_output4_size * stream_tid, 84, \
-        d_fc3_weight, 10, 84, \
-        d_fc3_bias, \
-        d_output5 + d_output5_size * stream_tid, 10,
-        d_predict, t,
-        streams[stream_tid]);
-    // if (t % nStreams == 0)
-    //     for (int i = 0; i < nStreams; i ++ )
-    //         cudaStreamSynchronize(streams[i]);
-    // cudaMemcpy(output5.data(), d_output5, sizeof(float) *10, cudaMemcpyDeviceToHost);
+        reluSPMV_final(d_output4 + d_output4_size * stream_tid, 84, \
+            d_fc3_weight, 10, 84, \
+            d_fc3_bias, \
+            d_output5 + d_output5_size * stream_tid, 10,
+            d_predict, t,
+            streams[stream_tid]);
+        // if (t % nStreams == 0)
+        //     for (int i = 0; i < nStreams; i ++ )
+        //         cudaStreamSynchronize(streams[i]);
+        // cudaMemcpy(output5.data(), d_output5, sizeof(float) *10, cudaMemcpyDeviceToHost);
 
-    // printf("output5\n");
-    // printTensor(output5, 10, 1, 1);
+        // printf("output5\n");
+        // printTensor(output5, 10, 1, 1);
 
 
-    // printf("\noutput2:\n");
-    // printTensor(output5, 10, 1, 1);
+        // printf("\noutput2:\n");
+        // printTensor(output5, 10, 1, 1);
 
-        
-        // if (labels[t] == maxT(output5))
-        //     sum++;
+
+            // if (labels[t] == maxT(output5))
+            //     sum++;
 #endif
         // std::cout << "real: " << labels[t]<< ", predict : "<<  maxT(output5) << std::endl;
     }
 
 #if 0
-    
+
     printf("input:\n");
     printTensor(input, 28, 28, 1);
     poolReluConv1(d_input, 28, 28, \
         d_conv1_weight, 1, 6, 5, \
         d_conv1_bias, 2, \
-        d_output1, 12, 12, 
-        outputTmp);
+        d_output1, 12, 12,
+        outputTmp, streams[0]);
 
     // printf("--------------output1--------------\n");
     // printTensor(output1, 12, 12, 6);
@@ -1191,7 +1212,7 @@ int main(int argc, char* argv[]) {
         d_conv2_weight, 6, 16, 5, \
         d_conv2_bias, 2, \
         d_output2, 4, 4,
-        outputTmp);
+        outputTmp, streams[0]);
     // cudaMemcpy(output2.data(), d_output2, sizeof(float) * 6 * 24 * 24, cudaMemcpyDeviceToHost);
 
     // printf("output2\n");
@@ -1200,7 +1221,7 @@ int main(int argc, char* argv[]) {
     reluSPMV(d_output2, 256, \
         d_fc1_weight, 120, 256, \
         d_fc1_bias, \
-        d_output3, 120);
+        d_output3, 120, streams[0]);
 
     // printf("output3\n");
     // printTensor(output3, 120, 1, 1);
@@ -1208,7 +1229,7 @@ int main(int argc, char* argv[]) {
     reluSPMV(d_output3, 120, \
         d_fc2_weight, 84, 120, \
         d_fc2_bias, \
-        d_output4, 84);
+        d_output4, 84, streams[0]);
     // printf("output4\n");
     // printTensor(output4, 84, 1, 1);
 
@@ -1216,10 +1237,10 @@ int main(int argc, char* argv[]) {
         d_fc3_weight, 10, 84, \
         d_fc3_bias, \
         d_output5, 10,
-        d_predict, 0);
-    
+        d_predict, 0, streams[0]);
 
-   
+
+
     // printf("pre %d\n", tmp_pre[0]);
     // printf("output5\n");
     // printTensor(output5, 10, 1, 1);
@@ -1235,25 +1256,25 @@ int main(int argc, char* argv[]) {
     //     cudaStreamSynchronize(streams[i]);
     sum = check(d_predict, d_labels, labels.size());
     // cudaMemcpy(predict, d_predict, sizeof(int) *labels.size(), cudaMemcpyDeviceToHost);
-    checkCudaErrors(cudaFree(d_conv1_weight));
-    checkCudaErrors(cudaFree(d_conv1_bias));
-    checkCudaErrors(cudaFree(d_conv2_weight));
-    checkCudaErrors(cudaFree(d_conv2_bias));
-    checkCudaErrors(cudaFree(d_input));
-    checkCudaErrors(cudaFree(d_output1));
-    checkCudaErrors(cudaFree(d_output2));
-    checkCudaErrors(cudaFree(d_output3));
-    checkCudaErrors(cudaFree(d_output4));
-    checkCudaErrors(cudaFree(d_output5));
-    checkCudaErrors(cudaFree(d_fc1_weight));
-    checkCudaErrors(cudaFree(d_fc1_bias));
-    checkCudaErrors(cudaFree(d_fc2_weight));
-    checkCudaErrors(cudaFree(d_fc2_bias));
-    checkCudaErrors(cudaFree(d_fc3_weight));
-    checkCudaErrors(cudaFree(d_fc3_bias));
-    checkCudaErrors(cudaFree(outputTmp));
-    checkCudaErrors(cudaFree(d_predict));
-    checkCudaErrors(cudaFree(d_labels));
+    cudaFree(d_conv1_weight);
+    cudaFree(d_conv1_bias);
+    cudaFree(d_conv2_weight);
+    cudaFree(d_conv2_bias);
+    cudaFree(d_input);
+    cudaFree(d_output1);
+    cudaFree(d_output2);
+    cudaFree(d_output3);
+    cudaFree(d_output4);
+    cudaFree(d_output5);
+    cudaFree(d_fc1_weight);
+    cudaFree(d_fc1_bias);
+    cudaFree(d_fc2_weight);
+    cudaFree(d_fc2_bias);
+    cudaFree(d_fc3_weight);
+    cudaFree(d_fc3_bias);
+    cudaFree(outputTmp);
+    cudaFree(d_predict);
+    cudaFree(d_labels);
     // 向主机端同步以等待所有异步调用的GPU kernel执行完毕，这句必须要有
     // 结束计时
     auto end = std::chrono::high_resolution_clock::now();
