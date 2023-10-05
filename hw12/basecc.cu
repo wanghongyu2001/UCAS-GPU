@@ -982,7 +982,7 @@ int main(int argc, char* argv[]) {
     // cout << dir;
 
     // 读取测试集，对于想实现CUDA C/C++训练的同学，参考训练集文件名为train-images-idx3-ubyte和train-labels-idx1-ubyte
-#if 0
+#if 1
     auto images = read_mnist_images(dir + "/../../data/FashionMNIST/raw/t10k-images-idx3-ubyte");
     // 读取测试集标签
     auto labels = read_mnist_labels(dir + "/../../data/FashionMNIST/raw/t10k-labels-idx1-ubyte");
@@ -1049,7 +1049,7 @@ int main(int argc, char* argv[]) {
     int* d_predict, * d_labels;
     int* predict = (int*)malloc(sizeof(int) * labels.size());
 
-    const int nStreams = 1;
+    const int nStreams = 6;
     cudaStream_t streams[nStreams];
     for (int i = 0; i < nStreams; i++) {
         cudaStreamCreate(&streams[i]);
