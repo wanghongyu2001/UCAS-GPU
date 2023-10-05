@@ -7,7 +7,7 @@
 #include <chrono>
 #include <iomanip>
 #include <string>
-
+#include <cuda.h>
 #include <cuda_runtime.h>
 
 #define checkCudaErrors(func)				\
@@ -942,7 +942,7 @@ int check(int* d_predict, int* d_labels, int N)
     for (int i = 0; i < block_num; i ++ )
     {
         ans += sum[i];
-        printf("sum[%d] = %d\n", i, sum[i]);
+        // printf("sum[%d] = %d\n", i, sum[i]);
     }
     return ans;
     
@@ -961,6 +961,22 @@ int main(int argc, char* argv[]) {
     // cout << dir;
 
     // 读取测试集，对于想实现CUDA C/C++训练的同学，参考训练集文件名为train-images-idx3-ubyte和train-labels-idx1-ubyte
+#if 0
+    auto images = read_mnist_images(dir + "/../../data/FashionMNIST/raw/t10k-images-idx3-ubyte");
+    // 读取测试集标签
+    auto labels = read_mnist_labels(dir + "/../../data/FashionMNIST/raw/t10k-labels-idx1-ubyte");
+    // 读取模型参数
+    auto conv1_weight = read_param(dir + "/conv1.weight.txt");
+    auto conv1_bias = read_param(dir + "/conv1.bias.txt");
+    auto conv2_weight = read_param(dir + "/conv2.weight.txt");
+    auto conv2_bias = read_param(dir + "/conv2.bias.txt");
+    auto fc1_weight = read_param(dir + "/fc1.weight.txt");
+    auto fc1_bias = read_param(dir + "/fc1.bias.txt");
+    auto fc2_weight = read_param(dir + "/fc2.weight.txt");
+    auto fc2_bias = read_param(dir + "/fc2.bias.txt");
+    auto fc3_weight = read_param(dir + "/fc3.weight.txt");
+    auto fc3_bias = read_param(dir + "/fc3.bias.txt");
+#else
     auto images = read_mnist_images(dir + "/data/FashionMNIST/raw/t10k-images-idx3-ubyte");
     // 读取测试集标签
     auto labels = read_mnist_labels(dir + "/data/FashionMNIST/raw/t10k-labels-idx1-ubyte");
@@ -986,7 +1002,7 @@ int main(int argc, char* argv[]) {
     // auto fc2_bias = read_param(dir + "/fc2.bias.txt");
     // auto fc3_weight = read_param(dir + "/fc3.weight.txt");
     // auto fc3_bias = read_param(dir + "/fc3.bias.txt");
-
+#endif
     // 打印每一个标签，仅用于调试！
 
     // for (const auto& label : labels) {
@@ -1030,25 +1046,25 @@ int main(int argc, char* argv[]) {
     // int d_output3_size = 120 ;
     // int d_output4_size = 84 ;
     // int d_output5_size = 10 ;
-    cudaMalloc(&outputTmp, sizeof(float) * (24) * (24) * 16 * nStreams * 4);
-    cudaMalloc(&d_input, 1 * 28 * 28 * sizeof(float) * nStreams * 4);
-    cudaMalloc(&d_output1, 6 * 24 * 24 * sizeof(float) * nStreams * 4);
-    cudaMalloc(&d_output2, 6 * 24 * 24 * sizeof(float) * nStreams * 4);
-    cudaMalloc(&d_output3, 120 * sizeof(float) * nStreams * 4);
-    cudaMalloc(&d_output4, 84 * sizeof(float) * nStreams * 4);
-    cudaMalloc(&d_output5, 10 * sizeof(float) * nStreams * 4);
-    cudaMalloc(&d_predict, sizeof(int) * labels.size());
-    cudaMalloc(&d_labels, sizeof(int) * labels.size());
-    cudaMalloc(&d_conv1_weight, conv1_weight.size() * sizeof(float));
-    cudaMalloc(&d_conv1_bias, conv1_bias.size() * sizeof(float));
-    cudaMalloc(&d_conv2_weight, conv2_weight.size() * sizeof(float));
-    cudaMalloc(&d_conv2_bias, conv2_bias.size() * sizeof(float));
-    cudaMalloc(&d_fc1_weight, fc1_weight.size() * sizeof(float));
-    cudaMalloc(&d_fc1_bias, fc1_bias.size() * sizeof(float));
-    cudaMalloc(&d_fc2_weight, fc2_weight.size() * sizeof(float));
-    cudaMalloc(&d_fc2_bias, fc2_bias.size() * sizeof(float));
-    cudaMalloc(&d_fc3_weight, fc3_weight.size() * sizeof(float));
-    cudaMalloc(&d_fc3_bias, fc3_bias.size() * sizeof(float));
+    checkCudaErrors(cudaMalloc(&outputTmp, sizeof(float) * (24) * (24) * 16 * nStreams * 4));
+    checkCudaErrors(cudaMalloc(&d_input, 1 * 28 * 28 * sizeof(float) * nStreams * 4));
+    checkCudaErrors(cudaMalloc(&d_output1, 6 * 24 * 24 * sizeof(float) * nStreams * 4));
+    checkCudaErrors(cudaMalloc(&d_output2, 6 * 24 * 24 * sizeof(float) * nStreams * 4));
+    checkCudaErrors(cudaMalloc(&d_output3, 120 * sizeof(float) * nStreams * 4));
+    checkCudaErrors(cudaMalloc(&d_output4, 84 * sizeof(float) * nStreams * 4));
+    checkCudaErrors(cudaMalloc(&d_output5, 10 * sizeof(float) * nStreams * 4));
+    checkCudaErrors(cudaMalloc(&d_predict, sizeof(int) * labels.size()));
+    checkCudaErrors(cudaMalloc(&d_labels, sizeof(int) * labels.size()));
+    checkCudaErrors(cudaMalloc(&d_conv1_weight, conv1_weight.size() * sizeof(float)));
+    checkCudaErrors(cudaMalloc(&d_conv1_bias, conv1_bias.size() * sizeof(float)));
+    checkCudaErrors(cudaMalloc(&d_conv2_weight, conv2_weight.size() * sizeof(float)));
+    checkCudaErrors(cudaMalloc(&d_conv2_bias, conv2_bias.size() * sizeof(float)));
+    checkCudaErrors(cudaMalloc(&d_fc1_weight, fc1_weight.size() * sizeof(float)));
+    checkCudaErrors(cudaMalloc(&d_fc1_bias, fc1_bias.size() * sizeof(float)));
+    checkCudaErrors(cudaMalloc(&d_fc2_weight, fc2_weight.size() * sizeof(float)));
+    checkCudaErrors(cudaMalloc(&d_fc2_bias, fc2_bias.size() * sizeof(float)));
+    checkCudaErrors(cudaMalloc(&d_fc3_weight, fc3_weight.size() * sizeof(float)));
+    checkCudaErrors(cudaMalloc(&d_fc3_bias, fc3_bias.size() * sizeof(float)));
     std::vector<float> output2(6 * 24 * 24, 0);
     std::vector<float> output3(120, 0);
     std::vector<float> output4(84, 0);
@@ -1056,17 +1072,17 @@ int main(int argc, char* argv[]) {
     std::vector<float> input(28 * 28, 0);
     // init_ij(input, 28, 28, 1);
 
-    cudaMemcpy(d_labels, labels.data(), labels.size() * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_conv1_weight, conv1_weight.data(), sizeof(float) * conv1_weight.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_conv1_bias, conv1_bias.data(), sizeof(float) * conv1_bias.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_conv2_weight, conv2_weight.data(), sizeof(float) * conv2_weight.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_conv2_bias, conv2_bias.data(), sizeof(float) * conv2_bias.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_fc1_weight, fc1_weight.data(), sizeof(float) * fc1_weight.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_fc2_weight, fc2_weight.data(), sizeof(float) * fc2_weight.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_fc3_weight, fc3_weight.data(), sizeof(float) * fc3_weight.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_fc1_bias, fc1_bias.data(), sizeof(float) * fc1_bias.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_fc2_bias, fc2_bias.data(), sizeof(float) * fc2_bias.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_fc3_bias, fc3_bias.data(), sizeof(float) * fc3_bias.size(), cudaMemcpyHostToDevice);
+    checkCudaErrors(cudaMemcpy(d_labels, labels.data(), labels.size() * sizeof(int), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_conv1_weight, conv1_weight.data(), sizeof(float) * conv1_weight.size(), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_conv1_bias, conv1_bias.data(), sizeof(float) * conv1_bias.size(), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_conv2_weight, conv2_weight.data(), sizeof(float) * conv2_weight.size(), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_conv2_bias, conv2_bias.data(), sizeof(float) * conv2_bias.size(), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_fc1_weight, fc1_weight.data(), sizeof(float) * fc1_weight.size(), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_fc2_weight, fc2_weight.data(), sizeof(float) * fc2_weight.size(), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_fc3_weight, fc3_weight.data(), sizeof(float) * fc3_weight.size(), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_fc1_bias, fc1_bias.data(), sizeof(float) * fc1_bias.size(), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_fc2_bias, fc2_bias.data(), sizeof(float) * fc2_bias.size(), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_fc3_bias, fc3_bias.data(), sizeof(float) * fc3_bias.size(), cudaMemcpyHostToDevice));
 
     int sum = 0;
     for (int t = 0; t < images.size(); t++) {
@@ -1214,35 +1230,35 @@ int main(int argc, char* argv[]) {
 
 
 #endif
-    cudaDeviceSynchronize();
-    for (int i = 0; i < nStreams; i ++ )
-        cudaStreamSynchronize(streams[i]);
+    // cudaDeviceSynchronize();
+    // for (int i = 0; i < nStreams; i ++ )
+    //     cudaStreamSynchronize(streams[i]);
     sum = check(d_predict, d_labels, labels.size());
     // cudaMemcpy(predict, d_predict, sizeof(int) *labels.size(), cudaMemcpyDeviceToHost);
-    cudaFree(d_conv1_weight);
-    cudaFree(d_conv1_bias);
-    cudaFree(d_conv2_weight);
-    cudaFree(d_conv2_bias);
-    cudaFree(d_input);
-    cudaFree(d_output1);
-    cudaFree(d_output2);
-    cudaFree(d_output3);
-    cudaFree(d_output4);
-    cudaFree(d_output5);
-    cudaFree(d_fc1_weight);
-    cudaFree(d_fc1_bias);
-    cudaFree(d_fc2_weight);
-    cudaFree(d_fc2_bias);
-    cudaFree(d_fc3_weight);
-    cudaFree(d_fc3_bias);
-    cudaFree(outputTmp);
-    cudaFree(d_predict);
-    cudaFree(d_labels);
+    checkCudaErrors(cudaFree(d_conv1_weight));
+    checkCudaErrors(cudaFree(d_conv1_bias));
+    checkCudaErrors(cudaFree(d_conv2_weight));
+    checkCudaErrors(cudaFree(d_conv2_bias));
+    checkCudaErrors(cudaFree(d_input));
+    checkCudaErrors(cudaFree(d_output1));
+    checkCudaErrors(cudaFree(d_output2));
+    checkCudaErrors(cudaFree(d_output3));
+    checkCudaErrors(cudaFree(d_output4));
+    checkCudaErrors(cudaFree(d_output5));
+    checkCudaErrors(cudaFree(d_fc1_weight));
+    checkCudaErrors(cudaFree(d_fc1_bias));
+    checkCudaErrors(cudaFree(d_fc2_weight));
+    checkCudaErrors(cudaFree(d_fc2_bias));
+    checkCudaErrors(cudaFree(d_fc3_weight));
+    checkCudaErrors(cudaFree(d_fc3_bias));
+    checkCudaErrors(cudaFree(outputTmp));
+    checkCudaErrors(cudaFree(d_predict));
+    checkCudaErrors(cudaFree(d_labels));
     // 向主机端同步以等待所有异步调用的GPU kernel执行完毕，这句必须要有
     // 结束计时
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> diff = end - start;
-    printf("sum = %d\n", sum);
+    // printf("sum = %d\n", sum);
 
     // 输出结果，请严格保持此输出格式，并把0.0001替换成实际的准确率，请不要输出除了此结果之外的任何内容！！！
     std::cout << std::fixed << std::setprecision(2) << diff.count() << ":" << std::setprecision(4) << (float)sum / (float)images.size() << std::endl;
