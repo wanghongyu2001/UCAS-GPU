@@ -307,294 +307,6 @@ void reluMaxPool(float* d_input, int inputRowSize, int inputColSize, int inputCh
 #endif
 }
 
-
-template <
-    const int BLOCK_HEIGHT, const int BLOCK_WIDTH, const int KERNEL_HEIGHT, const int KERNEL_WIDTH, const int MALLOC_TEMP_SIZE>
-__global__ void _conv2d(element_type* in, element_type* out, element_type* kernel, element_type* kernelBias, int batch_size,
-    int inputChannel, int inputRowSize, int inputColSize,
-    int outputChannel, int outputRowSize, int outputColSize,
-    int kernelH, int kernelW)
-{
-    // block id 与 thread id的读取与计算 分块是对target矩阵去分的
-    // 目前按一个线程负责一个in的计算
-    int thread_num_per_block = blockDim.x * blockDim.y, tid = threadIdx.y * blockDim.x + threadIdx.x;
-    // 分块边界 boundary是限制正常范围 edge是需要特殊处理的范围
-    int row_boundary = outputRowSize / BLOCK_HEIGHT - 1,
-        col_boundary = outputColSize / BLOCK_WIDTH - 1;
-    int row_edge = outputRowSize % BLOCK_HEIGHT, col_edge = outputColSize % BLOCK_WIDTH;
-    // 线程计算值暂存区大小 动态分配不是很方便 需要在外部分配并带进来
-    // 一般取单个计算元素和oc之积的2倍即可 因为block比较小
-    const int temp_size = MALLOC_TEMP_SIZE;
-
-    // if (tid==0)
-    //     printf("(%d %d)\n", blockIdx.y, blockIdx.x);
-
-
-    // __shared__ float s_in[BLOCK_HEIGHT + KERNEL_HEIGHT - 1][BLOCK_WIDTH + KERNEL_WIDTH - 1];
-    __shared__ float s_kernel[1 + KERNEL_HEIGHT][1 + KERNEL_WIDTH]; // 开奇数内存会出错
-    __shared__ float s_in[(BLOCK_HEIGHT + KERNEL_HEIGHT) * 2][(BLOCK_WIDTH + KERNEL_WIDTH) * 2];       // 要满足修正的尺寸
-    float load_reg[4];
-
-    // 当前block的起始位置
-    // int begin_pos = (blockIdx.y + threadIdx.y) * BLOCK_HEIGHT + (blockIdx.x) * BLOCK_WIDTH + threadIdx.x;
-    //记录in矩阵的起始位置，他是根据in矩阵进行划分的
-    int begin_pos = blockIdx.y * blockDim.y * inputColSize + blockIdx.x * BLOCK_WIDTH;
-
-    int single_trans_ele_num = 4;                               // 线程一次转移的数据数
-    int cur_in_block_height = BLOCK_HEIGHT + KERNEL_HEIGHT - 1, // 读入in的block height，读入in的block的row大小
-        cur_in_block_width = BLOCK_WIDTH + KERNEL_WIDTH - 1,    // 读入in的block width，读入in的block的col大小
-        in_tile_thread_per_row,
-        in_tile_row_start,
-        in_tile_col,
-        in_tile_row_stride;
-
-    // 如果是in边缘的block，需要多读几个数据，相当于处理边界情况
-    if (blockIdx.y == row_boundary)
-    {
-        cur_in_block_height = BLOCK_HEIGHT + row_edge + kernelH - 1;
-    }
-    if (blockIdx.x == col_boundary)
-    {
-        cur_in_block_width = BLOCK_WIDTH + col_edge + kernelW - 1;
-    }
-
-    in_tile_thread_per_row = cur_in_block_width / single_trans_ele_num; //每个线程读取single_trans_ele_num个数据，则一行需要的线程数
-    in_tile_row_start = tid / in_tile_thread_per_row; //就是说这个tid对应的行是多少，我理解的tile是一行
-    in_tile_col = tid % in_tile_thread_per_row * single_trans_ele_num; // 获得这个tid对应的这行第几个然后*4就知道他从哪一列开始读取
-    in_tile_row_stride = thread_num_per_block / in_tile_thread_per_row; // 每个thread需要跳跃的大小
-
-    // 下方都是读取第一个channel的数据
-    for (int i = 0; i < cur_in_block_height && in_tile_row_start < cur_in_block_height;
-        i += in_tile_row_stride)
-    {
-        // if (blockIdx.y == 0 && blockIdx.x == 0)
-        // {
-        //     printf("%d (%d %d) %d %d\n", tid, in_tile_row_start + i, in_tile_col, cur_in_block_height, cur_in_block_width);
-        // }
-        FETCH_FLOAT4(load_reg[0]) =
-            FETCH_FLOAT4(in[begin_pos + OFFSET(in_tile_row_start + i, in_tile_col, inputColSize)]);
-        s_in[in_tile_row_start + i][in_tile_col] = load_reg[0];
-        s_in[in_tile_row_start + i][in_tile_col + 1] = load_reg[1];
-        s_in[in_tile_row_start + i][in_tile_col + 2] = load_reg[2];
-        s_in[in_tile_row_start + i][in_tile_col + 3] = load_reg[3];
-        if (in_tile_col + 2 * single_trans_ele_num > cur_in_block_width &&
-            cur_in_block_width > in_tile_col + 1 * single_trans_ele_num) // 余量不足一次转移数
-        {
-            for (int j = in_tile_col + 1 * single_trans_ele_num; j < cur_in_block_width; j++)
-            {
-                s_in[in_tile_row_start + i][j] = in[begin_pos + OFFSET(in_tile_row_start + i, j, inputColSize)];
-            }
-        }
-    }
-
-
-    if (threadIdx.y < KERNEL_HEIGHT && threadIdx.x == 0)
-    {
-        for (int j = 0; j < KERNEL_WIDTH; j++)
-        {
-            s_kernel[threadIdx.y][j] = kernel[OFFSET(threadIdx.y, j, KERNEL_WIDTH)];
-        }
-    }
-
-    __syncthreads();
-
-
-
-    // 逐个channel计算 一个线程负责block中的一个元素计算
-
-    int cur_out_block_height = blockDim.y,
-        cur_out_block_width = blockDim.x,
-        out_tile_thread_per_row,
-        out_tile_row_start,
-        out_tile_col,
-        out_tile_row_stride;
-    if (blockIdx.y == row_boundary)
-    {
-        cur_out_block_height = BLOCK_HEIGHT + row_edge;
-    }
-    if (blockIdx.x == col_boundary)
-    {
-        cur_out_block_width = BLOCK_WIDTH + col_edge;
-    }
-
-    out_tile_thread_per_row = cur_out_block_width;
-    out_tile_row_start = tid / out_tile_thread_per_row;
-    out_tile_col = tid % out_tile_thread_per_row;
-    out_tile_row_stride = thread_num_per_block / out_tile_thread_per_row;
-
-    float tmp[temp_size];
-    for (int i = 0; i < temp_size; i++)
-        tmp[i] = 0;
-
-    int out_pos, temp_pos;
-
-    for (int oc = 0; oc < outputChannel; oc++)
-    {
-        for (int ic = 0; ic < inputChannel; ic++)
-        {
-            // i,j 是相当于当前block起始位置而言
-            // 用ic的每个block去对oc的kernel进行计算
-            for (int i = 0; i < cur_out_block_height && (out_tile_row_start + i) < cur_out_block_height;
-                i += out_tile_row_stride)
-            {
-
-                // 计算线程负责的元素 同一个oc的缓存顺序排列
-                // 不同oc偏移一个cur_out_block_height / out_tile_row_stride + 1的位置
-                temp_pos = i / out_tile_row_stride +
-                    oc * (cur_out_block_height / out_tile_row_stride + 1);
-                for (int ii = 0; ii < KERNEL_HEIGHT; ii++)
-                {
-                    for (int jj = 0; jj < KERNEL_WIDTH; jj++) // 更换的是SMEM中的内容，相对位置不变
-                    {
-                        tmp[temp_pos] += s_in[out_tile_row_start + i + ii][out_tile_col + jj] * s_kernel[ii][jj];
-                    }
-                }
-
-            }
-            // 读取下一个in channel和对应kernel的数据
-            if (ic + 1 < inputChannel)
-            {
-                for (int i = 0; i < cur_in_block_height && in_tile_row_start < cur_in_block_height;
-                    i += in_tile_row_stride)
-                {
-                    FETCH_FLOAT4(load_reg[0]) =
-                        FETCH_FLOAT4(in[begin_pos + (ic + 1) * inputRowSize * inputColSize + OFFSET(in_tile_row_start + i, in_tile_col, inputColSize)]);
-                    s_in[in_tile_row_start + i][in_tile_col] = load_reg[0];
-                    s_in[in_tile_row_start + i][in_tile_col + 1] = load_reg[1];
-                    s_in[in_tile_row_start + i][in_tile_col + 2] = load_reg[2];
-                    s_in[in_tile_row_start + i][in_tile_col + 3] = load_reg[3];
-                    if (in_tile_col + 2 * single_trans_ele_num > cur_in_block_width &&
-                        in_tile_col + 1 * single_trans_ele_num < cur_in_block_width)
-                    {
-                        for (int j = in_tile_col + 1 * single_trans_ele_num; j < cur_in_block_width; j++)
-                        {
-                            s_in[in_tile_row_start + i][j] = in[begin_pos + (ic + 1) * inputRowSize * inputColSize + OFFSET(in_tile_row_start + i, j, inputColSize)];
-                        }
-                    }
-                }
-                if (threadIdx.y < KERNEL_HEIGHT && threadIdx.x == 0)
-                {
-                    for (int j = 0; j < KERNEL_WIDTH; j++)
-                    {
-                        s_kernel[threadIdx.y][j] = kernel[(oc * inputChannel + ic + 1) * kernelH * kernelW + OFFSET(threadIdx.y, j, KERNEL_WIDTH)];
-                    }
-                }
-            }
-
-            __syncthreads();
-
-        }
-        // 读取下一个kernel channel数据
-        if (oc + 1 < outputChannel)
-        {
-            if (threadIdx.y < KERNEL_HEIGHT && threadIdx.x == 0)
-            {
-                for (int j = 0; j < KERNEL_WIDTH; j++)
-                {
-                    s_kernel[threadIdx.y][j] = kernel[(oc + 1) * inputChannel * kernelH * kernelW + OFFSET(threadIdx.y, j, KERNEL_WIDTH)];
-                }
-            }
-        }
-        __syncthreads();
-        // 写回 利用线程id计算写回位置
-        int i = 0;
-        while (i < cur_out_block_height && (out_tile_row_start + i) < cur_out_block_height)
-        {
-            out_pos = oc * outputRowSize * outputColSize +
-                blockIdx.y * BLOCK_HEIGHT * outputColSize + blockIdx.x * BLOCK_WIDTH +
-                OFFSET(out_tile_row_start + i, out_tile_col, outputColSize);
-            temp_pos = i / out_tile_row_stride +
-                oc * (cur_out_block_height / out_tile_row_stride + 1);
-            out[out_pos] = tmp[temp_pos] + kernelBias[oc];
-
-            i += out_tile_row_stride;
-        }
-        // 读取下一个in channel数据
-        for (int i = 0; i < cur_in_block_height && in_tile_row_start < cur_in_block_height;
-            i += in_tile_row_stride)
-        {
-
-            FETCH_FLOAT4(load_reg[0]) =
-                FETCH_FLOAT4(in[begin_pos + OFFSET(in_tile_row_start + i, in_tile_col, inputColSize)]);
-            s_in[in_tile_row_start + i][in_tile_col] = load_reg[0];
-            s_in[in_tile_row_start + i][in_tile_col + 1] = load_reg[1];
-            s_in[in_tile_row_start + i][in_tile_col + 2] = load_reg[2];
-            s_in[in_tile_row_start + i][in_tile_col + 3] = load_reg[3];
-            if (in_tile_col + 2 * single_trans_ele_num > cur_in_block_width &&
-                cur_in_block_width > in_tile_col + 1 * single_trans_ele_num)
-            {
-                for (int j = in_tile_col + 1 * single_trans_ele_num; j < cur_in_block_width; j++)
-                {
-                    s_in[in_tile_row_start + i][j] = in[begin_pos + OFFSET(in_tile_row_start + i, j, inputColSize)];
-                }
-            }
-        }
-    }
-}
-
-void conv2d(float* d_input, int inputRowSize, int inputColSize, int inputChannel, \
-    float* d_kernel, float* d_kernelBias, int kernelRowSize, int kernelColSize, \
-    float* d_output, int outputRowSize, int outputColSize, int outputChannel, cudaStream_t stream)
-{
-#if 1
-    // float * d_kernel, *d_kernelBias;
-    // int inputSize = inputChannel * inputRowSize * inputColSize * sizeof(float);
-    // int outputSize = outputChannel * outputRowSize * outputRowSize * sizeof(float);
-    // int kernelSize = kernelRowSize * kernelColSize * inputChannel * outputChannel * sizeof(float);
-    // int kernelBiasSize = outputChannel * sizeof(float);
-    dim3 dimGrid(outputColSize / BLOCK_WIDTH, outputRowSize / BLOCK_HEIGHT);
-    dim3 dimBlock(BLOCK_WIDTH, BLOCK_HEIGHT);
-    // checkCudaErrors(cudaMalloc(&d_input, inputSize));
-    // checkCudaErrors(cudaMalloc(&d_output, outputSize));
-    // checkCudaErrors(cudaMalloc(&d_kernel, kernelSize));
-    // checkCudaErrors(cudaMalloc(&d_kernelBias, kernelBiasSize));
-
-    // checkCudaErrors(cudaMemcpy(d_input, input.data(), inputSize, cudaMemcpyHostToDevice));
-    // checkCudaErrors(cudaMemcpy(d_kernel, kernel.data(), kernelSize, cudaMemcpyHostToDevice));
-    // checkCudaErrors(cudaMemcpy(d_kernelBias, kernelBias.data(), kernelBiasSize, cudaMemcpyHostToDevice));
-
-    _conv2d<BLOCK_HEIGHT, BLOCK_WIDTH, KERNEL_HEIGHT, KERNEL_WIDTH, MALLOC_TEMP_SIZE>
-        << <dimGrid, dimBlock, 2000, stream >> > (d_input, d_output, d_kernel, d_kernelBias,
-            N, inputChannel, inputRowSize, inputColSize, outputChannel, outputRowSize, outputColSize, kernelRowSize, kernelColSize);
-    // cudaDeviceSynchronize();
-    // checkCudaErrors(cudaMemcpy(output.data(), d_output, outputSize, cudaMemcpyDeviceToHost));
-
-    //free
-    // checkCudaErrors(cudaFree(d_input));
-    // checkCudaErrors(cudaFree(d_output));
-    // checkCudaErrors(cudaFree(d_kernel));
-    // checkCudaErrors(cudaFree(d_kernelBias));
-#else
-
-    for (int c = 0; c < outputChannel; c++)
-    {
-        for (int i = 0; i < outputRowSize; i++)
-        {
-            for (int j = 0; j < outputColSize; j++)
-            {
-                //elementwise + reduce
-                double tmp = 0;
-                for (int tc = 0; tc < inputChannel; tc++)
-                {
-                    for (int row = i; row < i + kernelRowSize; row++)
-                    {
-                        for (int col = j; col < j + kernelColSize; col++)
-                        {
-                            tmp += kernel[c * kernelRowSize * kernelColSize * inputChannel + \
-                                tc * kernelColSize * kernelRowSize + \
-                                (row - i) * kernelColSize + (col - j)] * \
-                                input[tc * inputRowSize * inputColSize + row * inputColSize + col];
-                        }
-                    }
-                }
-
-                output[c * outputRowSize * outputColSize + i * outputColSize + j] = tmp + kernelBias[c];
-
-            }
-        }
-    }
-#endif
-}
 // 读取MNIST数据集
 std::vector<std::vector<float>> read_mnist_images(const std::string& path) {
     std::ifstream file(path, std::ios::binary);
@@ -702,32 +414,6 @@ void printTensor(std::vector<float> A, int rowS, int colS, int chaS)
             std::cout << std::endl;
         }
     }
-
-}
-void poolReluConv1(float* input, int inputRowSize, int inputColSize, \
-    float* kernelWeight, int inputChannel, int outputChannel, int kernelConv1Size, \
-    float* kernelConv1Bias, int kernelMaxPoolSize, \
-    float* output, int outputRowSize, int outputColSize, float* outputTmp, cudaStream_t stream)
-{
-    // std::vector<float> outputTmp((inputRowSize - kernelConv1Size + 1) * (inputRowSize - kernelConv1Size + 1) * outputChannel, 0);
-    // float* outputTmp;
-    // cudaMalloc(&outputTmp, sizeof(float) * (inputRowSize - kernelConv1Size + 1) * (inputRowSize - kernelConv1Size + 1) * outputChannel);
-    conv2d(input, inputRowSize, inputColSize, inputChannel, \
-        kernelWeight, kernelConv1Bias, kernelConv1Size, kernelConv1Size, \
-        outputTmp, inputRowSize - kernelConv1Size + 1, inputColSize - kernelConv1Size + 1, outputChannel, stream);
-
-    inputRowSize = inputRowSize - kernelConv1Size + 1;
-    inputColSize = inputColSize - kernelConv1Size + 1;
-    outputRowSize = inputRowSize / kernelMaxPoolSize;
-    outputColSize = inputColSize / kernelMaxPoolSize;
-    outputChannel = outputChannel;
-    inputChannel = outputChannel;
-    // printTensor(outputTmp, 24, 24, 6);
-    reluMaxPool(outputTmp, inputRowSize, inputColSize, inputChannel, \
-        kernelMaxPoolSize, kernelMaxPoolSize, \
-        output, outputRowSize, outputColSize, outputChannel, stream);
-    // cudaFree(outputTmp);
-    // printTensor(output, 12, 12, 6);
 
 }
 
@@ -848,7 +534,7 @@ void reluSPMV(float* d_input, int inputRowSize, \
 
     dim3 dimGrid((kernelRowSize + 3) / 4);
     dim3 dimBlock(32, 4);
-    reluGemv << < dimGrid, dimBlock, 2000, stream >> > (d_kernel, d_kernelBias, d_input, d_output, kernelRowSize, kernelColSize);
+    reluGemv << < dimGrid, dimBlock >> > (d_kernel, d_kernelBias, d_input, d_output, kernelRowSize, kernelColSize);
 
 
 #else
@@ -875,7 +561,7 @@ void reluSPMV_final(float* d_input, int inputRowSize, \
 
     dim3 dimGrid((kernelRowSize + 3) / 4);
     dim3 dimBlock(32, 4);
-    reluGemv_final << < dimGrid, dimBlock, 2000, stream >> > (d_kernel, d_kernelBias, d_input, d_output, kernelRowSize, kernelColSize, predict, idx);
+    reluGemv_final << < dimGrid, dimBlock >> > (d_kernel, d_kernelBias, d_input, d_output, kernelRowSize, kernelColSize, predict, idx);
 
 
 #else
@@ -977,6 +663,135 @@ void init_ij(std::vector<float>& A, int n, int m, int c)
                 A[i * n * m + j * m + k] = k + j;
         }
 }
+
+
+__global__ void _conv2d(float* input, float* output, float* output_pool, const float* __restrict__ kernel,
+    const float* __restrict__ kernel_bias,
+    int inputChannel, int outputChannel, int inputSize, int kernelSize) //是方形
+{ //放入一个channle的大小，每个block处理一个output channel,大小是inputSize, 还是多个output channel？
+
+    //放入一个channle的大小，每个block处理一个output channel,大小是inputSize, 还是多个output channel？
+    __shared__ float in_s[28][28];
+    __shared__ float in_pool_s[28][28];
+    __shared__ float ker_s[5][5];
+    //确定要处理哪个outputchannel, 2d grid
+    int oc = blockIdx.x + blockIdx.y * blockDim.x;
+    float tmp_bias = kernel_bias[oc];
+    int outputSize = inputSize - kernelSize + 1;
+
+    int destY = threadIdx.y, destX = threadIdx.x;
+    int srcY = destY, srcX = destX;
+    if (oc < outputChannel)
+    {
+
+
+        float accum = 0;
+        for (int ic = 0; ic < inputChannel; ic++)
+        {
+            if (destY < kernelSize && destX < kernelSize)
+            {
+                int ker_pos = oc * kernelSize * kernelSize * inputChannel +
+                    ic * kernelSize * kernelSize + destY * kernelSize + destX;
+                ker_s[destY][destX] = kernel[ker_pos];
+            }
+            __syncthreads();
+
+            if (threadIdx.y < inputSize && threadIdx.x < inputSize)
+            {
+                int in_pos = ic * inputSize * inputSize + threadIdx.y * inputSize + threadIdx.x;
+                in_s[destY][destX] = input[in_pos];
+                int a = 1;
+                __syncthreads();
+
+            }
+
+            __syncthreads();
+
+            // if (ic == 0 && oc == 0 && outputChannel > 0 && threadIdx.x == 2 && threadIdx.y == 0)
+            // {
+            //     for (int i = 0; i < 12; i++)
+            //         for (int j = 0; j < 12; j++)
+            //         {
+            //             in_s[i][j] = input[ic * inputSize * inputSize + i * inputSize + j];
+            //             printf("%d %d %d oc %d ic %d, in_[%d][%d] = %f input = %f\n", blockIdx.x, blockIdx.y, blockIdx.z, oc, ic, i, j, in_s[i][j], input[ic * inputSize * inputSize + i * inputSize + j]);
+            //         }
+            // }
+
+            if (srcY + kernelSize - 1 < inputSize && srcX + kernelSize - 1 < inputSize)
+            {
+                for (int i = 0; i < kernelSize; i++)
+                {
+                    for (int j = 0; j < kernelSize; j++)
+                    {
+                        int ker_pos = oc * kernelSize * kernelSize * inputChannel +
+                            ic * kernelSize * kernelSize + i * kernelSize + j;
+                        // accum += input[ic * inputSize * inputSize + (srcY + i) * inputSize + srcX + j] * kernel[ker_pos];
+                        accum += in_s[srcY + i][srcX + j] * ker_s[i][j];
+                    }
+                }
+
+            }
+
+
+        }
+        __syncthreads();
+
+        int out_pos = oc * outputSize * outputSize + destY * outputSize + destX;
+        if (destY < outputSize && destX < outputSize)
+            output[out_pos] = accum + tmp_bias;
+
+        if (destY < outputSize && destX < outputSize)
+            in_pool_s[destY][destX] = accum + tmp_bias;
+
+        __syncthreads();
+        // if (oc == 4 && outputChannel > 10 && threadIdx.x == 0 && threadIdx.y == 0)
+        // {
+        //     for (int i = 0; i < 8; i++)
+        //         for (int j = 0; j < 8; j++)
+        //         {
+        //             printf("oc %d outputSize %d in_pool_[%d][%d] = %f\n", oc, outputSize, i, j, in_pool_s[i][j]);
+        //         }
+
+        // }
+        // __syncthreads();
+        //maxpool + relu
+
+
+        int output_pool_size = outputSize / 2;
+        int kernel_pool_size = 2;
+
+        if (srcY < output_pool_size && srcX < output_pool_size)
+        {
+            float tmp_max = 0;
+            for (int i = 0; i < kernel_pool_size; i++)
+                for (int j = 0; j < kernel_pool_size; j++)
+                {
+
+                    // out_pos = oc * outputSize * outputSize + (srcY * kernel_pool_size + i) * outputSize + srcX * kernel_pool_size + j;
+                    tmp_max = max(tmp_max,in_pool_s[srcY * kernel_pool_size + i][srcX * kernel_pool_size + j]);
+                    // if (oc == 4 && outputChannel > 10 && threadIdx.x == 3 && threadIdx.y == 2)
+                    // {
+                    //     // printf("accum = %f inpool_s[%d][%d] = %f\n", accum, srcY * kernel_pool_size + i, srcX * kernel_pool_size + j,
+                    //     //     in_pool_s[srcY * kernel_pool_size + i][srcX * kernel_pool_size + j]);
+                    // }
+                }
+            int out_pos = oc * output_pool_size * output_pool_size + srcY * output_pool_size + srcX;
+            output_pool[out_pos] = 1.2222;
+            if (tmp_max >= 0)
+            {
+                
+                output_pool[out_pos] = tmp_max;
+            }
+            else
+            {
+                output_pool[out_pos] = 0;
+            }
+        }
+
+        __syncthreads();
+
+    }
+}
 int main(int argc, char* argv[]) {
     std::string dir = argv[1];  // 第一个参数是程序所在的目录，这个目录是存放前一步训练模型参数文件的目录，从这个目录下读取模型参数文件，相对于这个目录读取测试集图片和标签
     // cout << dir;
@@ -1041,15 +856,14 @@ int main(int argc, char* argv[]) {
 
     // 参数加载
     // std::cout << fc3_bias.size() << std::endl;
-        // std::vector<float> output1(6 * 24 * 24, 0);
     float* d_output1, * d_output2, * d_output3, * d_output4, * d_output5, * d_input;
     float* d_conv1_weight, * d_conv1_bias, * d_conv2_weight, * d_conv2_bias, * d_fc1_weight,
         * d_fc1_bias, * d_fc2_weight, * d_fc2_bias, * d_fc3_weight, * d_fc3_bias;
-    float* outputTmp;
+    float* d_outputTmp;
     int* d_predict, * d_labels;
     int* predict = (int*)malloc(sizeof(int) * labels.size());
 
-    const int nStreams = 6;
+    const int nStreams = 1;
     cudaStream_t streams[nStreams];
     for (int i = 0; i < nStreams; i++) {
         cudaStreamCreate(&streams[i]);
@@ -1067,7 +881,7 @@ int main(int argc, char* argv[]) {
     // int d_output3_size = 120 ;
     // int d_output4_size = 84 ;
     // int d_output5_size = 10 ;
-    cudaMalloc(&outputTmp, sizeof(float) * (24) * (24) * 16 * nStreams * 4);
+    cudaMalloc(&d_outputTmp, sizeof(float) * (24) * (24) * 16 * nStreams * 4);
     cudaMalloc(&d_input, 1 * 28 * 28 * sizeof(float) * nStreams * 4);
     cudaMalloc(&d_output1, 6 * 24 * 24 * sizeof(float) * nStreams * 4);
     cudaMalloc(&d_output2, 6 * 24 * 24 * sizeof(float) * nStreams * 4);
@@ -1086,11 +900,13 @@ int main(int argc, char* argv[]) {
     cudaMalloc(&d_fc2_bias, fc2_bias.size() * sizeof(float));
     cudaMalloc(&d_fc3_weight, fc3_weight.size() * sizeof(float));
     cudaMalloc(&d_fc3_bias, fc3_bias.size() * sizeof(float));
-    std::vector<float> output2(6 * 24 * 24, 0);
+    std::vector<float> output2(16 * 4 * 4, 0);
+    std::vector<float> output1(6 * 12 * 12, 0);
     std::vector<float> output3(120, 0);
     std::vector<float> output4(84, 0);
     std::vector<float> output5(10, 0);
-    std::vector<float> input(28 * 28, 0);
+    std::vector<float> input(28 * 28, 0), outputTmp1(24 * 24 * 6, 0), outputTmp(8 * 8 * 16, 0);
+    
     // init_ij(input, 28, 28, 1);
 
     cudaMemcpy(d_labels, labels.data(), labels.size() * sizeof(int), cudaMemcpyHostToDevice);
@@ -1106,7 +922,7 @@ int main(int argc, char* argv[]) {
     cudaMemcpy(d_fc3_bias, fc3_bias.data(), sizeof(float) * fc3_bias.size(), cudaMemcpyHostToDevice);
 
     int sum = 0;
-    for (int t = 0; t < images.size(); t++) {
+    for (int t = 0; t < 10000; t++) {
         // TODO ...在这里实现利用CUDA对图片进行深度学习的推理过程，当然，你也可以改进for循环以使用batch推理提速...
 
         // 打印每一张图片，仅用于调试！
@@ -1130,27 +946,37 @@ int main(int argc, char* argv[]) {
     // printf("input:\n");
     // printTensor(input, 28, 28, 1);
         int stream_tid = t % nStreams;
-        cudaMemcpyAsync(d_input + d_input_size * stream_tid, images[t].data(), sizeof(float) * 28 * 28, cudaMemcpyHostToDevice, streams[stream_tid]);
+        // printf("--------------------------------input--------------------------------\n");
+        // init_ij(input, 28, 28, 1);
+        // printTensor(input, 28, 28, 1);
+        cudaMemcpy(d_input + d_input_size * stream_tid, images[t].data(), sizeof(float) * 28 * 28, cudaMemcpyHostToDevice);
 
-        poolReluConv1(d_input + d_input_size * stream_tid, 28, 28, \
-            d_conv1_weight, 1, 6, 5, \
-            d_conv1_bias, 2, \
-            d_output1 + d_output1_size * stream_tid, 12, 12,
-            outputTmp + outputTmp_size * stream_tid,
-            streams[stream_tid]);
+        dim3 block(28, 28);
+        dim3 grid(16);
+        _conv2d << < grid, block >> > (d_input + d_input_size * stream_tid, d_outputTmp, d_output1 + d_output1_size * stream_tid, d_conv1_weight,
+            d_conv1_bias, 1, 6, 28, 5);
 
-        // printf("--------------output1--------------\n");
+        cudaDeviceSynchronize();
+        // checkCudaErrors(cudaMemcpy(d_output_pool, output_pool.data(), output_pool.size() * sizeof(float), cudaMemcpyHostToDevice));
+
+        // cudaMemcpy(output1.data(), d_output1, sizeof(float) * 6 * 12 * 12, cudaMemcpyDeviceToHost);
+        // cudaMemcpy(outputTmp1.data(), d_outputTmp, sizeof(float) * outputTmp1.size(), cudaMemcpyDeviceToHost);
+        // printf("--------------------------------output_conv--------------------------------\n");
+        // printTensor(outputTmp1, 24, 24, 6);
+        // printf("--------------------------------output1--------------------------------\n");
         // printTensor(output1, 12, 12, 6);
 
-        poolReluConv1(d_output1 + d_output1_size * stream_tid, 12, 12, \
-            d_conv2_weight, 6, 16, 5, \
-            d_conv2_bias, 2, \
-            d_output2 + d_output2_size * stream_tid, 4, 4,
-            outputTmp + outputTmp_size * stream_tid,
-            streams[stream_tid]);
-        // cudaMemcpy(output2.data(), d_output2, sizeof(float) * 6 * 24 * 24, cudaMemcpyDeviceToHost);
+        // cudaDeviceSynchronize();
+        _conv2d << < grid, block >> > (d_output1 + d_output1_size * stream_tid, d_outputTmp, d_output2 + d_output2_size * stream_tid, d_conv2_weight,
+            d_conv2_bias, 6, 16, 12, 5);
+        cudaDeviceSynchronize();
 
-        // printf("output2\n");
+        // cudaMemcpy(output2.data(), d_output2, sizeof(float) * output2.size(), cudaMemcpyDeviceToHost);
+        // cudaMemcpy(outputTmp.data(), d_outputTmp, sizeof(float)* outputTmp.size(), cudaMemcpyDeviceToHost);
+
+        // printf("--------------------------------output_conv--------------------------------\n");
+        // printTensor(outputTmp, 8, 8, 16);
+        // printf("--------------------------------output2_maxpool--------------------------------\n");
         // printTensor(output2, 4, 4, 16);
 
         reluSPMV(d_output2 + d_output2_size * stream_tid, 256, \
@@ -1158,8 +984,10 @@ int main(int argc, char* argv[]) {
             d_fc1_bias, \
             d_output3 + d_output3_size * stream_tid, 120,
             streams[stream_tid]);
+        cudaDeviceSynchronize();
 
-        // printf("output3\n");
+        // cudaMemcpy(output3.data(), d_output3, sizeof(float) * output3.size(), cudaMemcpyDeviceToHost);
+        // printf("--------------------------------output3--------------------------------\n");
         // printTensor(output3, 120, 1, 1);
 
         reluSPMV(d_output3 + d_output3_size * stream_tid, 120, \
@@ -1167,15 +995,28 @@ int main(int argc, char* argv[]) {
             d_fc2_bias, \
             d_output4 + d_output4_size * stream_tid, 84,
             streams[stream_tid]);
-        // printf("output4\n");
+        cudaDeviceSynchronize();
+        // cudaMemcpy(output4.data(), d_output4, sizeof(float) * output4.size(), cudaMemcpyDeviceToHost);
+        // printf("--------------------------------output4--------------------------------\n");
         // printTensor(output4, 84, 1, 1);
-
+#if 0
+        reluSPMV(d_output4 + d_output4_size * stream_tid, 84, \
+            d_fc3_weight, 10, 84, \
+            d_fc3_bias, \
+            d_output5 + d_output5_size * stream_tid, 10,
+            streams[stream_tid]);
+        // cudaMemcpy(output5.data(), d_output5, sizeof(float) * output5.size(), cudaMemcpyDeviceToHost);
+        // printf("--------------------------------output5--------------------------------\n");
+        // printTensor(output5, 10, 1, 1);
+#else
         reluSPMV_final(d_output4 + d_output4_size * stream_tid, 84, \
             d_fc3_weight, 10, 84, \
             d_fc3_bias, \
             d_output5 + d_output5_size * stream_tid, 10,
             d_predict, t,
             streams[stream_tid]);
+        cudaDeviceSynchronize();
+#endif
         // if (t % nStreams == 0)
         //     for (int i = 0; i < nStreams; i ++ )
         //         cudaStreamSynchronize(streams[i]);
@@ -1198,25 +1039,29 @@ int main(int argc, char* argv[]) {
 #if 0
 
     printf("input:\n");
+    init_ij(input, 28, 28, 1);
     printTensor(input, 28, 28, 1);
-    poolReluConv1(d_input, 28, 28, \
-        d_conv1_weight, 1, 6, 5, \
-        d_conv1_bias, 2, \
-        d_output1, 12, 12,
-        outputTmp, streams[0]);
+    int stream_tid = 0;
+    cudaMemcpyAsync(d_input + d_input_size * stream_tid, input.data(), sizeof(float) * 28 * 28, cudaMemcpyHostToDevice, streams[stream_tid]);
+    dim3 block(28, 28);
+    dim3 grid(16);
+    _conv2d << < grid, block >> > (d_input + d_input_size * stream_tid, d_output1 + d_output1_size * stream_tid, d_conv1_weight,
+        d_conv1_bias, 1, 6, 28, 5);
+    // checkCudaErrors(cudaMemcpy(d_output_pool, output_pool.data(), output_pool.size() * sizeof(float), cudaMemcpyHostToDevice));
 
-    // printf("--------------output1--------------\n");
-    // printTensor(output1, 12, 12, 6);
+    cudaMemcpy(output1.data(), d_output1, sizeof(float) * 6 * 12 * 12, cudaMemcpyDeviceToHost);
 
-    poolReluConv1(d_output1, 12, 12, \
-        d_conv2_weight, 6, 16, 5, \
-        d_conv2_bias, 2, \
-        d_output2, 4, 4,
-        outputTmp, streams[0]);
-    // cudaMemcpy(output2.data(), d_output2, sizeof(float) * 6 * 24 * 24, cudaMemcpyDeviceToHost);
+    printf("output1\n");
+    printTensor(output1, 12, 12, 6);
+    _conv2d << < grid, block >> > (d_output1 + d_output1_size * stream_tid, d_output2 + d_output2_size * stream_tid, d_conv2_weight,
+        d_conv2_bias, 6, 16, 12, 5);
+    cudaDeviceSynchronize();
 
-    // printf("output2\n");
-    // printTensor(output2, 4, 4, 16);
+
+    cudaMemcpy(output2.data(), d_output2, sizeof(float) * 4 * 4 * 16, cudaMemcpyDeviceToHost);
+
+    printf("output2\n");
+    printTensor(output2, 4, 4, 16);
 
     reluSPMV(d_output2, 256, \
         d_fc1_weight, 120, 256, \
@@ -1233,12 +1078,12 @@ int main(int argc, char* argv[]) {
     // printf("output4\n");
     // printTensor(output4, 84, 1, 1);
 
-    reluSPMV_final(d_output4, 84, \
+    reluSPMV(d_output4, 84, \
         d_fc3_weight, 10, 84, \
         d_fc3_bias, \
-        d_output5, 10,
-        d_predict, 0, streams[0]);
-
+        d_output5, 10, streams[0]);
+    cudaMemcpy(output5.data(), d_output5, sizeof(float) * 10, cudaMemcpyDeviceToHost);
+    printTensor(output5, 10, 1, 1);
 
 
     // printf("pre %d\n", tmp_pre[0]);
@@ -1272,7 +1117,7 @@ int main(int argc, char* argv[]) {
     cudaFree(d_fc2_bias);
     cudaFree(d_fc3_weight);
     cudaFree(d_fc3_bias);
-    cudaFree(outputTmp);
+    cudaFree(d_outputTmp);
     cudaFree(d_predict);
     cudaFree(d_labels);
     // 向主机端同步以等待所有异步调用的GPU kernel执行完毕，这句必须要有
