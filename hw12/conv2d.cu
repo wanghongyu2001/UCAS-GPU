@@ -709,14 +709,21 @@ __global__ void conv2d2(float* input, float* output_pool, const float* __restric
     }
 }
 
+template<int type>
+__global__ void _conv2d(float* input, float* output_pool, const float* __restrict__ kernel,
+    const float* __restrict__ kernel_bias) //是方形
+{
+    int inputChannel, outputChannel, inputSize, kernelSize;
+    if (type == 1)
+    {
+        inputChannel = 1, outputChannel = 6, inputSize = 28, kernelSize = 5;
+    }
+    else
+    {
+        inputChannel = 6, outputChannel = 16, inputSize = 12, kernelSize = 5;
+    }
 
-
-__global__ void _conv2d(float* input,  float* output_pool, const float* __restrict__ kernel,
-    const float* __restrict__ kernel_bias,
-    int inputChannel, int outputChannel, int inputSize, int kernelSize) //是方形
-{ //放入一个channle的大小，每个block处理一个output channel,大小是inputSize, 还是多个output channel？
-
-    //放入一个channle的大小，每个block处理一个output channel,大小是inputSize, 还是多个output channel？
+    
     __shared__ float in_s[28][28];
     __shared__ float in_pool_s[28][28];
     __shared__ float ker_s[5][5];
@@ -807,6 +814,113 @@ __global__ void _conv2d(float* input,  float* output_pool, const float* __restri
 
     }
 }
+
+template<int type>
+__global__ void _conv2d_1(float* input, float* output_pool, const float* __restrict__ kernel,
+    const float* __restrict__ kernel_bias) //是方形
+{
+    // printf("111111111 blockDImx.x%d y %d z %d\n", blockDim.x, blockDim.y, blockDim.z);
+    int inputChannel, outputChannel, inputSize, kernelSize;
+    if (type == 1)
+    {
+        inputChannel = 1, outputChannel = 6, inputSize = 28, kernelSize = 5;
+
+    }
+    else
+    {
+        inputChannel = 6, outputChannel = 16, inputSize = 12, kernelSize = 5;
+
+    }
+    __shared__ float in_s[28][28];
+    __shared__ float in_pool_s[28][28];
+    __shared__ float ker_s[5][5];
+
+
+
+    //确定要处理哪个outputchannel, 2d grid
+    // int oc = threadIdx.z;
+    
+    int outputSize = inputSize - kernelSize + 1;
+
+    int destY = threadIdx.y, destX = threadIdx.x;
+    int srcY = destY, srcX = destX;
+    for (int oc = 0; oc < outputChannel; oc ++ )
+    {
+
+        float tmp_bias = kernel_bias[oc];
+        float accum = 0;
+        for (int ic = 0; ic < inputChannel; ic++)
+        {
+            if (destY < kernelSize && destX < kernelSize)
+            {
+                int ker_pos = oc * kernelSize * kernelSize * inputChannel +
+                    ic * kernelSize * kernelSize + destY * kernelSize + destX;
+                ker_s[destY][destX] = kernel[ker_pos];
+            }
+            __syncthreads(); //奇怪，这个同步不能去
+
+            if (threadIdx.y < inputSize && threadIdx.x < inputSize)
+            {
+                int in_pos = ic * inputSize * inputSize + threadIdx.y * inputSize + threadIdx.x;
+                in_s[destY][destX] = input[in_pos];
+                int a = 1;
+            }
+
+            __syncthreads();
+
+            if (srcY + kernelSize - 1 < inputSize && srcX + kernelSize - 1 < inputSize)
+            {
+                for (int i = 0; i < kernelSize; i++)
+                {
+                    for (int j = 0; j < kernelSize; j++)
+                    {
+                        int ker_pos = oc * kernelSize * kernelSize * inputChannel +
+                            ic * kernelSize * kernelSize + i * kernelSize + j;
+                        // accum += input[ic * inputSize * inputSize + (srcY + i) * inputSize + srcX + j] * kernel[ker_pos];
+                        accum += in_s[srcY + i][srcX + j] * ker_s[i][j];
+                    }
+                }
+
+            }
+
+
+        }
+
+
+
+        if (destY < outputSize && destX < outputSize)
+            in_pool_s[destY][destX] = accum + tmp_bias;
+
+        __syncthreads();
+
+
+        int output_pool_size = outputSize / 2;
+        int kernel_pool_size = 2;
+
+        if (srcY < output_pool_size && srcX < output_pool_size)
+        {
+            float tmp_max = 0;
+            for (int i = 0; i < kernel_pool_size; i++)
+                for (int j = 0; j < kernel_pool_size; j++)
+                {
+
+                    tmp_max = max(tmp_max, in_pool_s[srcY * kernel_pool_size + i][srcX * kernel_pool_size + j]);
+                }
+            int out_pos = oc * output_pool_size * output_pool_size + srcY * output_pool_size + srcX;
+            if (tmp_max >= 0)
+            {
+
+                output_pool[out_pos] = tmp_max;
+            }
+            else
+            {
+                output_pool[out_pos] = 0;
+            }
+        }
+    }
+}
+
+
 // void test_conv1()
 // {
 //     std::vector<float> input(inputRowSize * inputColSize * inputChannel, 0);
@@ -927,10 +1041,18 @@ void test_conv_fusion()
     checkCudaErrors(cudaMemcpy(d_kernelBias2, kernelBias2.data(), kernelBias2Size, cudaMemcpyHostToDevice));
     dim3 block(28, 28);
     dim3 grid(16);
-    _conv2d << < grid, block >> > (d_input1, d_output_pool, d_kernel1, d_kernelBias1, 1, 6, 28, 5);
+    _conv2d_1<1> << < 1, block >> > (d_input1, d_output_pool, d_kernel1, d_kernelBias1);
+    cudaError_t cudaError = cudaGetLastError();
+    if (cudaError != cudaSuccess) {
+
+        fprintf(stderr, "CUDA error111: %s %d\n", cudaGetErrorString(cudaError), inputRowSize);
+        // 处理错误
+    }
     // checkCudaErrors(cudaMemcpy(d_output_pool, output_pool.data(), output_pool.size() * sizeof(float), cudaMemcpyHostToDevice));
+// checkCudaErrors(cudaMemcpy(output.data(), d_output, 24 * 24 * 6 * sizeof(float), cudaMemcpyDeviceToHost));
+
     cudaDeviceSynchronize();
-    _conv2d << < grid, block >> > (d_output_pool, d_output_pool2, d_kernel2, d_kernelBias2, 6, 16, 12, 5);
+    _conv2d_1<2> << < 1, block >> > (d_output_pool, d_output_pool2, d_kernel2, d_kernelBias2);
     cudaDeviceSynchronize();
     // checkCudaErrors(cudaMemcpy(output.data(), d_output, 24 * 24 * 6 * sizeof(float), cudaMemcpyDeviceToHost));
     checkCudaErrors(cudaMemcpy(output_pool2.data(), d_output_pool2, 4 * 4 * 16 * sizeof(float), cudaMemcpyDeviceToHost));
