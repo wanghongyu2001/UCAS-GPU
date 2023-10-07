@@ -308,7 +308,7 @@ void reluMaxPool(float* d_input, int inputRowSize, int inputColSize, int inputCh
 }
 
 // 读取MNIST数据集
-std::vector<std::vector<float>> read_mnist_images(const std::string& path) {
+std::vector<float> read_mnist_images(const std::string& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
         std::cout << "Cannot open file!" << path << std::endl;
@@ -332,15 +332,15 @@ std::vector<std::vector<float>> read_mnist_images(const std::string& path) {
         ((num_cols & 0x0000ff00) << 8) | ((num_cols & 0x000000ff) << 24);
     // std::cout << "magic_number " << magic_number << "num_images" << num_images << "num_rows" << num_rows << "num_cols" << num_cols << std::endl;
     int image_size = num_rows * num_cols;
-    std::vector<std::vector<float>> images(num_images, std::vector<float>(image_size));
+    std::vector<float> images(num_images * 28 * 28, 0);
 
     for (int i = 0; i < num_images; ++i) {
         for (int j = 0; j < image_size; ++j) {
             unsigned char pixel = 0;
             file.read((char*)&pixel, sizeof(pixel));
 
-            images[i][j] = static_cast<float>(pixel) / 255.0f;
-            images[i][j] = 2 * images[i][j] - 1;
+            images[i * 28 * 28 + j] = static_cast<float>(pixel) / 255.0f;
+            images[i * 28 * 28 + j] = 2 * images[i* 28 * 28 + j] - 1;
             // if (i == 0)
             // {
             //     std::cout << static_cast<float>(pixel) << " ";
@@ -1120,8 +1120,8 @@ __global__ void relugemv_fusion(
 }
 
 
-__global__ void _lenet_fusion(float* input, float* output_pool, const float* __restrict__ kernel,
-    const float* __restrict__ kernel_bias, float* output_pool2, const float* __restrict__ kernel2,
+__global__ void _lenet_fusion(float* input, float* t_output_pool, const float* __restrict__ kernel,
+    const float* __restrict__ kernel_bias, float* t_output_pool2, const float* __restrict__ kernel2,
     const float* __restrict__ kernel_bias2,
     float* __restrict__ A,
     float* __restrict__ ABias,
@@ -1133,8 +1133,11 @@ __global__ void _lenet_fusion(float* input, float* output_pool, const float* __r
     float* __restrict__ y2,
     int* predict, int t) //是方形
 {
- 
+    t = blockIdx.x;
+    // if (threadIdx.x ==0 && threadIdx.y ==0 ) printf("id %d\n", t);
+
     // printf("111111111 blockDImx.x%d y %d z %d\n", blockDim.x, blockDim.y, blockDim.z);
+    input = &input[t * 28 * 28];
     int inputChannel, outputChannel, inputSize, kernelSize;
     inputChannel = 1, outputChannel = 6, inputSize = 28, kernelSize = 5;
 
@@ -1143,6 +1146,8 @@ __global__ void _lenet_fusion(float* input, float* output_pool, const float* __r
     __shared__ float in_pool_s[28][28];
     __shared__ float ker_s[5][5];
 
+    __shared__ float output_pool[12 * 12 * 6];
+    __shared__ float output_pool2[4 * 4 * 16];
 
 
     //确定要处理哪个outputchannel, 2d grid
@@ -1204,7 +1209,6 @@ __global__ void _lenet_fusion(float* input, float* output_pool, const float* __r
 
         int output_pool_size = outputSize / 2;
         int kernel_pool_size = 2;
-
         if (srcY < output_pool_size && srcX < output_pool_size)
         {
             float tmp_max = 0;
@@ -1285,7 +1289,7 @@ __global__ void _lenet_fusion(float* input, float* output_pool, const float* __r
 
         int output_pool_size = outputSize / 2;
         int kernel_pool_size = 2;
-
+        // 4 * 4 * 16
         if (srcY < output_pool_size && srcX < output_pool_size)
         {
             float tmp_max = 0;
@@ -1327,14 +1331,14 @@ __global__ void _lenet_fusion(float* input, float* output_pool, const float* __r
     __shared__ float y1[84];
     __shared__ float out[10];
     if (tid < width)
-        x_s[tid] = x[tid];
+        x_s[tid] = output_pool2[tid];
     __syncthreads();
     // if (tid == 0)
     // {
     //     printf("------------------------------------y------------------------------------\n");
     //     print_d(x, 256);
     // }
-        for (int row = warp_id; row < height; row += warp_num)
+    for (int row = warp_id; row < height; row += warp_num)
     {
         float tmp = 0;
         //取数据到Arow_s
@@ -1544,11 +1548,7 @@ int main(int argc, char* argv[]) {
     int* d_predict, * d_labels;
     int* predict = (int*)malloc(sizeof(int) * labels.size());
 
-    const int nStreams = 1;
-    cudaStream_t streams[nStreams];
-    for (int i = 0; i < nStreams; i++) {
-        cudaStreamCreate(&streams[i]);
-    }
+    int nStreams = 1;
     int d_input_size = 1 * 28 * 28 * sizeof(float);
     int d_output1_size = 6 * 24 * 24 * sizeof(float);
     int d_output2_size = 6 * 24 * 24 * sizeof(float);
@@ -1563,7 +1563,7 @@ int main(int argc, char* argv[]) {
     // int d_output4_size = 84 ;
     // int d_output5_size = 10 ;
     cudaMalloc(&d_outputTmp, sizeof(float) * (24) * (24) * 16 * nStreams * 4);
-    cudaMalloc(&d_input, 1 * 28 * 28 * sizeof(float) * nStreams * 4);
+    cudaMalloc(&d_input, 10000 * 28 * 28 * sizeof(float) * nStreams * 4);
     cudaMalloc(&d_output1, 6 * 24 * 24 * sizeof(float) * nStreams * 4);
     cudaMalloc(&d_output2, 6 * 24 * 24 * sizeof(float) * nStreams * 4);
     cudaMalloc(&d_output3, 120 * sizeof(float) * nStreams * 4);
@@ -1603,7 +1603,8 @@ int main(int argc, char* argv[]) {
     cudaMemcpy(d_fc3_bias, fc3_bias.data(), sizeof(float) * fc3_bias.size(), cudaMemcpyHostToDevice);
 
     int sum = 0;
-    for (int t = 0; t < 10000; t++) {
+    cudaMemcpy(d_input, images.data(), sizeof(float) * 28 * 28 * 10000, cudaMemcpyHostToDevice);
+    for (int t = 0; t < 1; t++) {
         // TODO ...在这里实现利用CUDA对图片进行深度学习的推理过程，当然，你也可以改进for循环以使用batch推理提速...
 
         // 打印每一张图片，仅用于调试！
@@ -1629,12 +1630,12 @@ int main(int argc, char* argv[]) {
         // printf("--------------------------------input--------------------------------\n");
         // init_ij(input, 28, 28, 1);
         // printTensor(input, 28, 28, 1);
-        cudaMemcpy(d_input + d_input_size * stream_tid, images[t].data(), sizeof(float) * 28 * 28, cudaMemcpyHostToDevice);
+        // cudaMemcpy(d_input + d_input_size * stream_tid, &images[t * 28 * 28], sizeof(float) * 28 * 28, cudaMemcpyHostToDevice);
 
         dim3 block(32, 32);
-        dim3 grid(16);
+        dim3 grid(10000);
 #if 1
-        _lenet_fusion << < 1, block >> > (d_input + d_input_size * stream_tid, d_output1 + d_output1_size * stream_tid, d_conv1_weight,
+        _lenet_fusion << < grid, block >> > (d_input , d_output1 + d_output1_size * stream_tid, d_conv1_weight,
             d_conv1_bias, d_output2 + d_output2_size * stream_tid, d_conv2_weight,
             d_conv2_bias,
             d_fc1_weight, d_fc1_bias,
@@ -1645,11 +1646,12 @@ int main(int argc, char* argv[]) {
             d_fc3_bias,
             d_output5 + d_output5_size * stream_tid,
             d_predict, t);
+        // cudaDeviceSynchronize();
 #else
         _conv2d_fusion << < 1, block >> > (d_input + d_input_size * stream_tid, d_output1 + d_output1_size * stream_tid, d_conv1_weight,
             d_conv1_bias, d_output2 + d_output2_size * stream_tid, d_conv2_weight,
             d_conv2_bias);
-        cudaDeviceSynchronize();
+        
 
         
         // cudaMemcpy(output2.data(), d_output2, sizeof(float) * output2.size(), cudaMemcpyDeviceToHost);
@@ -1783,7 +1785,7 @@ int main(int argc, char* argv[]) {
     // printf("sum = %d\n", sum);
 
     // 输出结果，请严格保持此输出格式，并把0.0001替换成实际的准确率，请不要输出除了此结果之外的任何内容！！！
-    std::cout << std::fixed << std::setprecision(2) << diff.count() << ":" << std::setprecision(4) << (float)sum / (float)images.size() << std::endl;
+    std::cout << std::fixed << std::setprecision(4) << diff.count() << ":" << std::setprecision(4) << (float)sum / (float)10000<< std::endl;
     // std::cout << std::fixed << std::setprecision(2) << diff.count() << ":0.0001";
 
     return 0;
