@@ -940,6 +940,7 @@ __global__ void _conv2d_fusion(float* input, float* output_pool, const float* __
         }
     }
 }
+
 __device__ void print_d(float* y, int len)
 {
     for (int i = 0; i < len; i++)
@@ -956,6 +957,361 @@ __global__ void relugemv_fusion(
     float* __restrict__ y2,
     int* predict, int t)
 {
+    //一个warp算y的一个元素
+    int height = 120, width = 256;
+    int warp_id = threadIdx.y;
+    int warp_num = blockDim.y;
+    const int warp_size = 32;
+
+    //warp要取的col的start
+    int col_vec_start = threadIdx.x;
+    int tid = threadIdx.x + threadIdx.y * blockDim.x;
+    // __shared__ Arow_s[width];
+    __shared__ float x_s[256];
+    __shared__ float y[120];
+    __shared__ float y1[84];
+    __shared__ float out[10];
+    if (tid < width)
+        x_s[tid] = x[tid];
+    __syncthreads();
+    // if (tid == 0)
+    // {
+    //     printf("------------------------------------y------------------------------------\n");
+    //     print_d(x, 256);
+    // }
+        for (int row = warp_id; row < height; row += warp_num)
+    {
+        float tmp = 0;
+        //取数据到Arow_s
+        float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start * 2];
+        float4 current_val2 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start * 2 + 1];
+        tmp += current_val1.x * x_s[col_vec_start * 8];
+        tmp += current_val1.y * x_s[col_vec_start * 8 + 1];
+        tmp += current_val1.z * x_s[col_vec_start * 8 + 2];
+        tmp += current_val1.w * x_s[col_vec_start * 8 + 3];
+        tmp += current_val2.x * x_s[col_vec_start * 8 + 4];
+        tmp += current_val2.y * x_s[col_vec_start * 8 + 5];
+        tmp += current_val2.z * x_s[col_vec_start * 8 + 6];
+        tmp += current_val2.w * x_s[col_vec_start * 8 + 7];
+        tmp = warpReduceSum<warp_size>(tmp);
+        // printf("tmp %f, ")
+        if (threadIdx.x == 0)
+        {
+            tmp += ABias[row];
+            if (tmp >= 0)
+                y[row] = tmp;
+            else
+                y[row] = 0;
+        }
+
+    }
+
+    __syncthreads();
+#ifdef DEBUG
+    if (tid == 0)
+    {
+        printf("------------------------------------y------------------------------------\n");
+        print_d(y, 120);
+    }
+#endif
+    //-----------------------------------------------128 * 84-------------------------------------------------------------
+    height = 84, width = 120;
+    //一个warp算y的一个元素
+
+    if (tid < width)
+        x_s[tid] = y[tid];
+    __syncthreads();
+    for (int row = warp_id; row < height; row += warp_num)
+    {
+
+        float tmp = 0;
+        //取数据到Arow_s
+        if (col_vec_start * 4 < width)
+        {
+            float4 current_val1 = reinterpret_cast<float4*>(A1)[row * width / 4 + col_vec_start];
+            // printf("current_val1 x %f y %f z %f w %f x[%d] %f %f %f %f\n", current_val1.x, current_val1.y, current_val1.z, current_val1.w, col_vec_start * 8 x_s[col_vec_start * 8]
+            //     , x_s[col_vec_start * 8 + 1], x_s[col_vec_start * 8 + 2], x_s[col_vec_start * 8 + 3]);
+            tmp += current_val1.x * x_s[col_vec_start * 4];
+            tmp += current_val1.y * x_s[col_vec_start * 4 + 1];
+            tmp += current_val1.z * x_s[col_vec_start * 4 + 2];
+            tmp += current_val1.w * x_s[col_vec_start * 4 + 3];
+        }
+
+        tmp = warpReduceSum<warp_size>(tmp);
+        if (threadIdx.x == 0)
+        {
+            tmp += ABias1[row];
+            if (tmp >= 0)
+                y1[row] = tmp;
+            else
+                y1[row] = 0;
+        }
+
+    }
+
+    __syncthreads();
+#ifdef DEBUG
+    if (tid == 0)
+    {
+        printf("------------------------------------y1------------------------------------\n");
+        print_d(y1, 84);
+    }
+#endif
+    //-----------------------------------------------128 * 84-------------------------------------------------------------
+    height = 10, width = 84;
+    //一个warp算y的一个元素
+    //warp要取的col的start
+    if (tid < width)
+        x_s[tid] = y1[tid];
+    __syncthreads();
+    for (int row = warp_id; row < height; row += warp_num)
+    {
+
+        float tmp = 0;
+        //取数据到Arow_s
+        if (col_vec_start * 4 < width)
+        {
+            float4 current_val1 = reinterpret_cast<float4*>(A2)[row * width / 4 + col_vec_start];
+            tmp += current_val1.x * x_s[col_vec_start * 4];
+            tmp += current_val1.y * x_s[col_vec_start * 4 + 1];
+            tmp += current_val1.z * x_s[col_vec_start * 4 + 2];
+            tmp += current_val1.w * x_s[col_vec_start * 4 + 3];
+        }
+
+        tmp = warpReduceSum<warp_size>(tmp);
+        if (threadIdx.x == 0)
+        {
+            tmp += ABias[row];
+            if (tmp >= 0)
+            {
+                out[row] = tmp;
+                y2[row] = tmp;
+            }
+            else
+            {
+
+                out[row] = 0;
+                y2[row] = 0;
+            }
+        }
+
+    }
+    __syncthreads();
+#ifdef DEBUG
+    if (tid == 0)
+    {
+        printf("------------------------------------y2------------------------------------\n");
+        print_d(y2, 10);
+    }
+#endif
+
+    if (tid == 0)
+    {
+        float tmp_max = 0, id = 0;
+        for (int i = 0; i < 10; i++)
+        {
+            if (tmp_max < out[i])
+            {
+                tmp_max = out[i], id = i;
+            }
+        }
+        predict[t] = id;
+    }
+}
+
+
+__global__ void _lenet_fusion(float* input, float* output_pool, const float* __restrict__ kernel,
+    const float* __restrict__ kernel_bias, float* output_pool2, const float* __restrict__ kernel2,
+    const float* __restrict__ kernel_bias2,
+    float* __restrict__ A,
+    float* __restrict__ ABias,
+    float* __restrict__ x,
+    float* __restrict__ A1,
+    float* __restrict__ ABias1,
+    float* __restrict__ A2,
+    float* __restrict__ ABias2,
+    float* __restrict__ y2,
+    int* predict, int t) //是方形
+{
+ 
+    // printf("111111111 blockDImx.x%d y %d z %d\n", blockDim.x, blockDim.y, blockDim.z);
+    int inputChannel, outputChannel, inputSize, kernelSize;
+    inputChannel = 1, outputChannel = 6, inputSize = 28, kernelSize = 5;
+
+
+    __shared__ float in_s[28][28];
+    __shared__ float in_pool_s[28][28];
+    __shared__ float ker_s[5][5];
+
+
+
+    //确定要处理哪个outputchannel, 2d grid
+    // int oc = threadIdx.z;
+
+    int outputSize = inputSize - kernelSize + 1;
+
+    int destY = threadIdx.y, destX = threadIdx.x;
+    int srcY = destY, srcX = destX;
+    for (int oc = 0; oc < outputChannel; oc++)
+    {
+
+        float tmp_bias = kernel_bias[oc];
+        float accum = 0;
+        for (int ic = 0; ic < inputChannel; ic++)
+        {
+            if (destY < kernelSize && destX < kernelSize)
+            {
+                int ker_pos = oc * kernelSize * kernelSize * inputChannel +
+                    ic * kernelSize * kernelSize + destY * kernelSize + destX;
+                ker_s[destY][destX] = kernel[ker_pos];
+            }
+            __syncthreads(); //奇怪，这个同步不能去
+
+            if (threadIdx.y < inputSize && threadIdx.x < inputSize)
+            {
+                int in_pos = ic * inputSize * inputSize + threadIdx.y * inputSize + threadIdx.x;
+                in_s[destY][destX] = input[in_pos];
+                int a = 1;
+            }
+
+            __syncthreads();
+
+            if (srcY + kernelSize - 1 < inputSize && srcX + kernelSize - 1 < inputSize)
+            {
+                for (int i = 0; i < kernelSize; i++)
+                {
+                    for (int j = 0; j < kernelSize; j++)
+                    {
+                        int ker_pos = oc * kernelSize * kernelSize * inputChannel +
+                            ic * kernelSize * kernelSize + i * kernelSize + j;
+                        // accum += input[ic * inputSize * inputSize + (srcY + i) * inputSize + srcX + j] * kernel[ker_pos];
+                        accum += in_s[srcY + i][srcX + j] * ker_s[i][j];
+                    }
+                }
+
+            }
+
+
+        }
+
+
+
+        if (destY < outputSize && destX < outputSize)
+            in_pool_s[destY][destX] = accum + tmp_bias;
+
+        __syncthreads();
+
+
+        int output_pool_size = outputSize / 2;
+        int kernel_pool_size = 2;
+
+        if (srcY < output_pool_size && srcX < output_pool_size)
+        {
+            float tmp_max = 0;
+            for (int i = 0; i < kernel_pool_size; i++)
+                for (int j = 0; j < kernel_pool_size; j++)
+                {
+
+                    tmp_max = max(tmp_max, in_pool_s[srcY * kernel_pool_size + i][srcX * kernel_pool_size + j]);
+                }
+            int out_pos = oc * output_pool_size * output_pool_size + srcY * output_pool_size + srcX;
+            if (tmp_max >= 0)
+            {
+
+                output_pool[out_pos] = tmp_max;
+            }
+            else
+            {
+                output_pool[out_pos] = 0;
+            }
+        }
+    }
+    __syncthreads();
+    //-----------_conv2d_1<2> << < 1, block >> > (d_output_pool, d_output_pool2, d_kernel2, d_kernelBias2);-----------
+    //------------------------------------------------second--------------------------------------------------------------
+    inputChannel = 6, outputChannel = 16, inputSize = 12, kernelSize = 5;
+    outputSize = inputSize - kernelSize + 1;
+
+
+    for (int oc = 0; oc < outputChannel; oc++)
+    {
+
+        float tmp_bias = kernel_bias2[oc];
+        float accum = 0;
+        for (int ic = 0; ic < inputChannel; ic++)
+        {
+            if (destY < kernelSize && destX < kernelSize)
+            {
+                int ker_pos = oc * kernelSize * kernelSize * inputChannel +
+                    ic * kernelSize * kernelSize + destY * kernelSize + destX;
+                ker_s[destY][destX] = kernel2[ker_pos];
+            }
+            __syncthreads(); //奇怪，这个同步不能去
+
+            if (threadIdx.y < inputSize && threadIdx.x < inputSize)
+            {
+                int in_pos = ic * inputSize * inputSize + threadIdx.y * inputSize + threadIdx.x;
+                in_s[destY][destX] = output_pool[in_pos];
+                int a = 1;
+            }
+
+            __syncthreads();
+
+            if (srcY + kernelSize - 1 < inputSize && srcX + kernelSize - 1 < inputSize)
+            {
+                for (int i = 0; i < kernelSize; i++)
+                {
+                    for (int j = 0; j < kernelSize; j++)
+                    {
+                        int ker_pos = oc * kernelSize * kernelSize * inputChannel +
+                            ic * kernelSize * kernelSize + i * kernelSize + j;
+                        // accum += input[ic * inputSize * inputSize + (srcY + i) * inputSize + srcX + j] * kernel[ker_pos];
+                        accum += in_s[srcY + i][srcX + j] * ker_s[i][j];
+                    }
+                }
+
+            }
+
+
+        }
+
+
+
+        if (destY < outputSize && destX < outputSize)
+            in_pool_s[destY][destX] = accum + tmp_bias;
+
+        __syncthreads();
+
+
+        int output_pool_size = outputSize / 2;
+        int kernel_pool_size = 2;
+
+        if (srcY < output_pool_size && srcX < output_pool_size)
+        {
+            float tmp_max = 0;
+            for (int i = 0; i < kernel_pool_size; i++)
+                for (int j = 0; j < kernel_pool_size; j++)
+                {
+
+                    tmp_max = max(tmp_max, in_pool_s[srcY * kernel_pool_size + i][srcX * kernel_pool_size + j]);
+                }
+            int out_pos = oc * output_pool_size * output_pool_size + srcY * output_pool_size + srcX;
+            if (tmp_max >= 0)
+            {
+
+                output_pool2[out_pos] = tmp_max;
+            }
+            else
+            {
+                output_pool2[out_pos] = 0;
+            }
+        }
+    }
+    __syncthreads();
+    //------------------------------------------------relu+gemv--------------------------------------------------------------
+    //                                                RELU + GEMV
+    //------------------------------------------------relu+gemv--------------------------------------------------------------
+    
     //一个warp算y的一个元素
     int height = 120, width = 256;
     int warp_id = threadIdx.y;
@@ -1266,7 +1622,6 @@ int main(int argc, char* argv[]) {
 
         // x = self.pool(F.relu(self.conv1(x))), x = images[t] conv1 = nn.Conv2d(1, 6, 5)
         //pool = nn.MaxPool2d(2, 2)
-#if 1
 
     // printf("input:\n");
     // printTensor(input, 28, 28, 1);
@@ -1278,7 +1633,19 @@ int main(int argc, char* argv[]) {
 
         dim3 block(32, 32);
         dim3 grid(16);
-
+#if 1
+        _lenet_fusion << < 1, block >> > (d_input + d_input_size * stream_tid, d_output1 + d_output1_size * stream_tid, d_conv1_weight,
+            d_conv1_bias, d_output2 + d_output2_size * stream_tid, d_conv2_weight,
+            d_conv2_bias,
+            d_fc1_weight, d_fc1_bias,
+            d_output2 + d_output2_size * stream_tid,
+            d_fc2_weight,
+            d_fc2_bias,
+            d_fc3_weight,
+            d_fc3_bias,
+            d_output5 + d_output5_size * stream_tid,
+            d_predict, t);
+#else
         _conv2d_fusion << < 1, block >> > (d_input + d_input_size * stream_tid, d_output1 + d_output1_size * stream_tid, d_conv1_weight,
             d_conv1_bias, d_output2 + d_output2_size * stream_tid, d_conv2_weight,
             d_conv2_bias);
@@ -1292,7 +1659,7 @@ int main(int argc, char* argv[]) {
         // printTensor(outputTmp, 8, 8, 16);
         // printf("--------------------------------output2_maxpool--------------------------------\n");
         // printTensor(output2, 4, 4, 16);
-#if 1
+
         relugemv_fusion << < 1, block >> > (d_fc1_weight, d_fc1_bias,
             d_output2 + d_output2_size * stream_tid,
             d_fc2_weight,
@@ -1304,48 +1671,8 @@ int main(int argc, char* argv[]) {
         // cudaMemcpy(output5.data(), d_output5, sizeof(float) * output5.size(), cudaMemcpyDeviceToHost);
         // printf("--------------------------------output5--------------------------------\n");
         // printTensor(output5, 10, 1, 1);
-        
-#else
-        
-        reluSPMV(d_output2 + d_output2_size * stream_tid, 256, \
-            d_fc1_weight, 120, 256, \
-            d_fc1_bias, \
-            d_output3 + d_output3_size * stream_tid, 120,
-            streams[stream_tid]);
-        cudaDeviceSynchronize();
 
-        // cudaMemcpy(output3.data(), d_output3, sizeof(float) * output3.size(), cudaMemcpyDeviceToHost);
-        // printf("--------------------------------output3--------------------------------\n");
-        // printTensor(output3, 120, 1, 1);
-
-        reluSPMV(d_output3 + d_output3_size * stream_tid, 120, \
-            d_fc2_weight, 84, 120, \
-            d_fc2_bias, \
-            d_output4 + d_output4_size * stream_tid, 84,
-            streams[stream_tid]);
-        cudaDeviceSynchronize();
-        // cudaMemcpy(output4.data(), d_output4, sizeof(float) * output4.size(), cudaMemcpyDeviceToHost);
-        // printf("--------------------------------output4--------------------------------\n");
-        // printTensor(output4, 84, 1, 1);
-#if 0
-        reluSPMV(d_output4 + d_output4_size * stream_tid, 84, \
-            d_fc3_weight, 10, 84, \
-            d_fc3_bias, \
-            d_output5 + d_output5_size * stream_tid, 10,
-            streams[stream_tid]);
-        // cudaMemcpy(output5.data(), d_output5, sizeof(float) * output5.size(), cudaMemcpyDeviceToHost);
-        // printf("--------------------------------output5--------------------------------\n");
-        // printTensor(output5, 10, 1, 1);
-#else
-        reluSPMV_final(d_output4 + d_output4_size * stream_tid, 84, \
-            d_fc3_weight, 10, 84, \
-            d_fc3_bias, \
-            d_output5 + d_output5_size * stream_tid, 10,
-            d_predict, t,
-            streams[stream_tid]);
-        cudaDeviceSynchronize();
-#endif
-#endif    
+   
         // if (t % nStreams == 0)
         //     for (int i = 0; i < nStreams; i ++ )
         //         cudaStreamSynchronize(streams[i]);
