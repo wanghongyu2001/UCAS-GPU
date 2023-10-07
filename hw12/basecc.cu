@@ -940,6 +940,183 @@ __global__ void _conv2d_fusion(float* input, float* output_pool, const float* __
         }
     }
 }
+__device__ void print_d(float* y, int len)
+{
+    for (int i = 0; i < len; i++)
+        printf("%f\n", y[i]);
+}
+__global__ void relugemv_fusion(
+    float* __restrict__ A,
+    float* __restrict__ ABias,
+    float* __restrict__ x,
+    float* __restrict__ A1,
+    float* __restrict__ ABias1,
+    float* __restrict__ A2,
+    float* __restrict__ ABias2,
+    float* __restrict__ y2,
+    int* predict, int t)
+{
+    //一个warp算y的一个元素
+    int height = 120, width = 256;
+    int warp_id = threadIdx.y;
+    int warp_num = blockDim.y;
+    const int warp_size = 32;
+
+    //warp要取的col的start
+    int col_vec_start = threadIdx.x;
+    int tid = threadIdx.x + threadIdx.y * blockDim.x;
+    // __shared__ Arow_s[width];
+    __shared__ float x_s[256];
+    __shared__ float y[120];
+    __shared__ float y1[84];
+    __shared__ float out[10];
+    if (tid < width)
+        x_s[tid] = x[tid];
+    __syncthreads();
+    // if (tid == 0)
+    // {
+    //     printf("------------------------------------y------------------------------------\n");
+    //     print_d(x, 256);
+    // }
+        for (int row = warp_id; row < height; row += warp_num)
+    {
+        float tmp = 0;
+        //取数据到Arow_s
+        float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start * 2];
+        float4 current_val2 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start * 2 + 1];
+        tmp += current_val1.x * x_s[col_vec_start * 8];
+        tmp += current_val1.y * x_s[col_vec_start * 8 + 1];
+        tmp += current_val1.z * x_s[col_vec_start * 8 + 2];
+        tmp += current_val1.w * x_s[col_vec_start * 8 + 3];
+        tmp += current_val2.x * x_s[col_vec_start * 8 + 4];
+        tmp += current_val2.y * x_s[col_vec_start * 8 + 5];
+        tmp += current_val2.z * x_s[col_vec_start * 8 + 6];
+        tmp += current_val2.w * x_s[col_vec_start * 8 + 7];
+        tmp = warpReduceSum<warp_size>(tmp);
+        // printf("tmp %f, ")
+        if (threadIdx.x == 0)
+        {
+            tmp += ABias[row];
+            if (tmp >= 0)
+                y[row] = tmp;
+            else
+                y[row] = 0;
+        }
+
+    }
+
+    __syncthreads();
+#ifdef DEBUG
+    if (tid == 0)
+    {
+        printf("------------------------------------y------------------------------------\n");
+        print_d(y, 120);
+    }
+#endif
+    //-----------------------------------------------128 * 84-------------------------------------------------------------
+    height = 84, width = 120;
+    //一个warp算y的一个元素
+
+    if (tid < width)
+        x_s[tid] = y[tid];
+    __syncthreads();
+    for (int row = warp_id; row < height; row += warp_num)
+    {
+
+        float tmp = 0;
+        //取数据到Arow_s
+        if (col_vec_start * 4 < width)
+        {
+            float4 current_val1 = reinterpret_cast<float4*>(A1)[row * width / 4 + col_vec_start];
+            // printf("current_val1 x %f y %f z %f w %f x[%d] %f %f %f %f\n", current_val1.x, current_val1.y, current_val1.z, current_val1.w, col_vec_start * 8 x_s[col_vec_start * 8]
+            //     , x_s[col_vec_start * 8 + 1], x_s[col_vec_start * 8 + 2], x_s[col_vec_start * 8 + 3]);
+            tmp += current_val1.x * x_s[col_vec_start * 4];
+            tmp += current_val1.y * x_s[col_vec_start * 4 + 1];
+            tmp += current_val1.z * x_s[col_vec_start * 4 + 2];
+            tmp += current_val1.w * x_s[col_vec_start * 4 + 3];
+        }
+
+        tmp = warpReduceSum<warp_size>(tmp);
+        if (threadIdx.x == 0)
+        {
+            tmp += ABias1[row];
+            if (tmp >= 0)
+                y1[row] = tmp;
+            else
+                y1[row] = 0;
+        }
+
+    }
+
+    __syncthreads();
+#ifdef DEBUG
+    if (tid == 0)
+    {
+        printf("------------------------------------y1------------------------------------\n");
+        print_d(y1, 84);
+    }
+#endif
+    //-----------------------------------------------128 * 84-------------------------------------------------------------
+    height = 10, width = 84;
+    //一个warp算y的一个元素
+    //warp要取的col的start
+    if (tid < width)
+        x_s[tid] = y1[tid];
+    __syncthreads();
+    for (int row = warp_id; row < height; row += warp_num)
+    {
+
+        float tmp = 0;
+        //取数据到Arow_s
+        if (col_vec_start * 4 < width)
+        {
+            float4 current_val1 = reinterpret_cast<float4*>(A2)[row * width / 4 + col_vec_start];
+            tmp += current_val1.x * x_s[col_vec_start * 4];
+            tmp += current_val1.y * x_s[col_vec_start * 4 + 1];
+            tmp += current_val1.z * x_s[col_vec_start * 4 + 2];
+            tmp += current_val1.w * x_s[col_vec_start * 4 + 3];
+        }
+
+        tmp = warpReduceSum<warp_size>(tmp);
+        if (threadIdx.x == 0)
+        {
+            tmp += ABias[row];
+            if (tmp >= 0)
+            {
+                out[row] = tmp;
+                y2[row] = tmp;
+            }
+            else
+            {
+
+                out[row] = 0;
+                y2[row] = 0;
+            }
+        }
+
+    }
+    __syncthreads();
+#ifdef DEBUG
+    if (tid == 0)
+    {
+        printf("------------------------------------y2------------------------------------\n");
+        print_d(y2, 10);
+    }
+#endif
+
+    if (tid == 0)
+    {
+        float tmp_max = 0, id = 0;
+        for (int i = 0; i < 10; i++)
+        {
+            if (tmp_max < out[i])
+            {
+                tmp_max = out[i], id = i;
+            }
+        }
+        predict[t] = id;
+    }
+}
 int main(int argc, char* argv[]) {
     std::string dir = argv[1];  // 第一个参数是程序所在的目录，这个目录是存放前一步训练模型参数文件的目录，从这个目录下读取模型参数文件，相对于这个目录读取测试集图片和标签
     // cout << dir;
@@ -1099,7 +1276,7 @@ int main(int argc, char* argv[]) {
         // printTensor(input, 28, 28, 1);
         cudaMemcpy(d_input + d_input_size * stream_tid, images[t].data(), sizeof(float) * 28 * 28, cudaMemcpyHostToDevice);
 
-        dim3 block(28, 28);
+        dim3 block(32, 32);
         dim3 grid(16);
 
         _conv2d_fusion << < 1, block >> > (d_input + d_input_size * stream_tid, d_output1 + d_output1_size * stream_tid, d_conv1_weight,
@@ -1115,7 +1292,21 @@ int main(int argc, char* argv[]) {
         // printTensor(outputTmp, 8, 8, 16);
         // printf("--------------------------------output2_maxpool--------------------------------\n");
         // printTensor(output2, 4, 4, 16);
-
+#if 1
+        relugemv_fusion << < 1, block >> > (d_fc1_weight, d_fc1_bias,
+            d_output2 + d_output2_size * stream_tid,
+            d_fc2_weight,
+            d_fc2_bias,
+            d_fc3_weight,
+            d_fc3_bias,
+            d_output5 + d_output5_size * stream_tid,
+            d_predict, t);
+        // cudaMemcpy(output5.data(), d_output5, sizeof(float) * output5.size(), cudaMemcpyDeviceToHost);
+        // printf("--------------------------------output5--------------------------------\n");
+        // printTensor(output5, 10, 1, 1);
+        
+#else
+        
         reluSPMV(d_output2 + d_output2_size * stream_tid, 256, \
             d_fc1_weight, 120, 256, \
             d_fc1_bias, \
@@ -1154,6 +1345,7 @@ int main(int argc, char* argv[]) {
             streams[stream_tid]);
         cudaDeviceSynchronize();
 #endif
+#endif    
         // if (t % nStreams == 0)
         //     for (int i = 0; i < nStreams; i ++ )
         //         cudaStreamSynchronize(streams[i]);

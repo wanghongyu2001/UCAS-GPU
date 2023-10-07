@@ -7,8 +7,12 @@
 #include <cublas_v2.h>
 #include <math.h> 
 using namespace std;
-const int inputRowSize = 84;
-const int outputRowSize =10;
+const int inputRowSize = 256;
+const int outputRowSize = 120;
+// const int inputRowSize = 120;
+// const int outputRowSize = 84;
+// const int inputRowSize = 84;
+// const int outputRowSize = 10;
 
 
 
@@ -119,11 +123,332 @@ __global__ void reluGemv(
             y[current_row] = res;
         else
             y[current_row] = 0;
-
-
     }
 }
+__device__ void print_d(float* y, int len)
+{
+    for (int i = 0; i < len; i++)
+        printf("%f\n", y[i]);
+}
 
+__global__ void relugemv_fusion(
+    float* __restrict__ A,
+    float* __restrict__ ABias,
+    float* __restrict__ x,
+    float* __restrict__ A1,
+    float* __restrict__ ABias1,
+    float* __restrict__ A2,
+    float* __restrict__ ABias2,
+    float* __restrict__ y2,
+    float* predict, int t)
+{
+    //一个warp算y的一个元素
+    int height = 120, width = 256;
+    int warp_id = threadIdx.y;
+    int warp_num = blockDim.y;
+    const int warp_size = 32;
+
+    //warp要取的col的start
+    int col_vec_start = threadIdx.x;
+    int tid = threadIdx.x + threadIdx.y * blockDim.x;
+    // __shared__ Arow_s[width];
+    __shared__ float x_s[256];
+    __shared__ float y[120];
+    __shared__ float y1[84];
+    __shared__ float out[10];
+    if (tid < width)
+        x_s[tid] = x[tid];
+    __syncthreads();
+    for (int row = warp_id; row < height; row += warp_num)
+    {
+        float tmp = 0;
+        //取数据到Arow_s
+        float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start * 2];
+        float4 current_val2 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start * 2 + 1];
+        tmp += current_val1.x * x_s[col_vec_start * 8];
+        tmp += current_val1.y * x_s[col_vec_start * 8 + 1];
+        tmp += current_val1.z * x_s[col_vec_start * 8 + 2];
+        tmp += current_val1.w * x_s[col_vec_start * 8 + 3];
+        tmp += current_val2.x * x_s[col_vec_start * 8 + 4];
+        tmp += current_val2.y * x_s[col_vec_start * 8 + 5];
+        tmp += current_val2.z * x_s[col_vec_start * 8 + 6];
+        tmp += current_val2.w * x_s[col_vec_start * 8 + 7];
+        tmp = warpReduceSum<warp_size>(tmp);
+        // printf("tmp %f, ")
+        if (threadIdx.x == 0)
+        {
+            tmp += ABias[row];
+            if (tmp >= 0)
+                y[row] = tmp;
+            else
+                y[row] = 0;
+        }
+
+    }
+
+    __syncthreads();
+    #ifdef DEBUG
+    if (tid == 0)
+    {
+        printf("------------------------------------y------------------------------------\n");
+        print_d(y, 120);
+    }
+    #endif
+    //-----------------------------------------------128 * 84-------------------------------------------------------------
+    height = 84, width = 120;
+    //一个warp算y的一个元素
+
+    if (tid < width)
+        x_s[tid] = y[tid];
+    __syncthreads();
+    for (int row = warp_id; row < height; row += warp_num)
+    {
+
+        float tmp = 0;
+        //取数据到Arow_s
+        if (col_vec_start * 4 < width)
+        {
+            float4 current_val1 = reinterpret_cast<float4*>(A1)[row * width / 4 + col_vec_start];
+            // printf("current_val1 x %f y %f z %f w %f x[%d] %f %f %f %f\n", current_val1.x, current_val1.y, current_val1.z, current_val1.w, col_vec_start * 8 x_s[col_vec_start * 8]
+            //     , x_s[col_vec_start * 8 + 1], x_s[col_vec_start * 8 + 2], x_s[col_vec_start * 8 + 3]);
+            tmp += current_val1.x * x_s[col_vec_start * 4];
+            tmp += current_val1.y * x_s[col_vec_start * 4 + 1];
+            tmp += current_val1.z * x_s[col_vec_start * 4 + 2];
+            tmp += current_val1.w * x_s[col_vec_start * 4 + 3];
+        }
+
+        tmp = warpReduceSum<warp_size>(tmp);
+        if (threadIdx.x == 0)
+        {
+            tmp += ABias1[row];
+            if (tmp >= 0)
+                y1[row] = tmp;
+            else
+                y1[row] = 0;
+        }
+
+    }
+
+    __syncthreads();
+#ifdef DEBUG
+    if (tid == 0)
+    {
+        printf("------------------------------------y1------------------------------------\n");
+            print_d(y1, 84);
+    }
+    #endif
+    //-----------------------------------------------128 * 84-------------------------------------------------------------
+    height = 10, width = 84;
+    //一个warp算y的一个元素
+    //warp要取的col的start
+    if (tid < width)
+        x_s[tid] = y1[tid];
+    __syncthreads();
+    for (int row = warp_id; row < height; row += warp_num)
+    {
+
+        float tmp = 0;
+        //取数据到Arow_s
+        if (col_vec_start * 4 < width)
+        {
+            float4 current_val1 = reinterpret_cast<float4*>(A2)[row * width / 4 + col_vec_start];
+            tmp += current_val1.x * x_s[col_vec_start * 4];
+            tmp += current_val1.y * x_s[col_vec_start * 4 + 1];
+            tmp += current_val1.z * x_s[col_vec_start * 4 + 2];
+            tmp += current_val1.w * x_s[col_vec_start * 4 + 3];
+        }
+
+        tmp = warpReduceSum<warp_size>(tmp);
+        if (threadIdx.x == 0)
+        {
+            tmp += ABias[row];
+            if (tmp >= 0)
+            {
+                out[row] = tmp;
+                y2[row] = tmp;
+            }
+            else
+            {
+
+                out[row] = 0;
+                y2[row] = 0;
+            }
+        }
+
+    }
+    __syncthreads();
+#ifdef DEBUG
+    if (tid == 0)
+    {
+        printf("------------------------------------y2------------------------------------\n");
+        print_d(y2, 10);
+    }
+#endif
+
+    if (tid == 0)
+    {
+        float tmp_max = 0, id = 0;
+        for (int i = 0; i < 10; i++)
+        {
+            if (tmp_max < out[i])
+            {
+                tmp_max = out[i], id = i;
+            }
+        }
+        predict[t] = id;
+    }
+}
+__global__ void relugemv_new(
+    float* __restrict__ A,
+    float* __restrict__ ABias,
+    float* __restrict__ x,
+    float* __restrict__ y,
+    int height,
+    int width)
+{
+    //一个warp算y的一个元素
+    int warp_id = threadIdx.y;
+    int warp_num = blockDim.y;
+    const int warp_size = 32;
+
+    //warp要取的col的start
+    int col_vec_start = threadIdx.x;
+    int tid = threadIdx.x + threadIdx.y * blockDim.x;
+    // __shared__ Arow_s[width];
+    __shared__ float x_s[256];
+    if (tid < width)
+        x_s[tid] = x[tid];
+    __syncthreads();
+    height = 120, width = 256;
+    for (int row = warp_id; row < height; row += warp_num)
+    {
+        float tmp = 0;
+        //取数据到Arow_s
+        float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start * 2];
+        float4 current_val2 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start * 2 + 1];
+        tmp += current_val1.x * x_s[col_vec_start * 8];
+        tmp += current_val1.y * x_s[col_vec_start * 8 + 1];
+        tmp += current_val1.z * x_s[col_vec_start * 8 + 2];
+        tmp += current_val1.w * x_s[col_vec_start * 8 + 3];
+        tmp += current_val1.x * x_s[col_vec_start * 8 + 4];
+        tmp += current_val2.y * x_s[col_vec_start * 8 + 5];
+        tmp += current_val2.z * x_s[col_vec_start * 8 + 6];
+        tmp += current_val2.w * x_s[col_vec_start * 8 + 7];
+        tmp = warpReduceSum<warp_size>(tmp);
+        if (threadIdx.x == 0)
+        {
+            tmp += ABias[row];
+            if (tmp >= 0)
+                y[row] = tmp;
+            else
+                y[row] = 0;
+        }
+
+    }
+
+
+}
+__global__ void relugemv_new2(
+    float* __restrict__ A,
+    float* __restrict__ ABias,
+    float* __restrict__ x,
+    float* __restrict__ y,
+    int height,
+    int width)
+{
+    height = 84, width = 120;
+    //一个warp算y的一个元素
+    int warp_id = threadIdx.y;
+    int warp_num = blockDim.y;
+    const int warp_size = 32;
+
+    //warp要取的col的start
+    int col_vec_start = threadIdx.x;
+    int tid = threadIdx.x + threadIdx.y * blockDim.x;
+    // __shared__ Arow_s[width];
+    __shared__ float x_s[256];
+    if (tid < width)
+        x_s[tid] = x[tid];
+    __syncthreads();
+    for (int row = warp_id; row < height; row += warp_num)
+    {
+        
+        float tmp = 0;
+        //取数据到Arow_s
+        if (col_vec_start * 4 < width)
+        {
+            float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start];
+            tmp += current_val1.x * x_s[col_vec_start * 8];
+            tmp += current_val1.y * x_s[col_vec_start * 8 + 1];
+            tmp += current_val1.z * x_s[col_vec_start * 8 + 2];
+            tmp += current_val1.w * x_s[col_vec_start * 8 + 3];
+        }
+        
+        tmp = warpReduceSum<warp_size>(tmp);
+        if (threadIdx.x == 0)
+        {
+            tmp += ABias[row];
+            if (tmp >= 0)
+                y[row] = tmp;
+            else
+                y[row] = 0;
+        }
+
+    }
+
+
+}
+
+__global__ void relugemv_new3(
+    float* __restrict__ A,
+    float* __restrict__ ABias,
+    float* __restrict__ x,
+    float* __restrict__ y,
+    int height,
+    int width)
+{
+    height = 10, width = 84;
+    //一个warp算y的一个元素
+    int warp_id = threadIdx.y;
+    int warp_num = blockDim.y;
+    const int warp_size = 32;
+
+    //warp要取的col的start
+    int col_vec_start = threadIdx.x;
+    int tid = threadIdx.x + threadIdx.y * blockDim.x;
+    // __shared__ Arow_s[width];
+    __shared__ float x_s[256];
+    if (tid < width)
+        x_s[tid] = x[tid];
+    __syncthreads();
+    for (int row = warp_id; row < height; row += warp_num)
+    {
+
+        float tmp = 0;
+        //取数据到Arow_s
+        if (col_vec_start * 4 < width)
+        {
+            float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start];
+            tmp += current_val1.x * x_s[col_vec_start * 8];
+            tmp += current_val1.y * x_s[col_vec_start * 8 + 1];
+            tmp += current_val1.z * x_s[col_vec_start * 8 + 2];
+            tmp += current_val1.w * x_s[col_vec_start * 8 + 3];
+        }
+
+        tmp = warpReduceSum<warp_size>(tmp);
+        if (threadIdx.x == 0)
+        {
+            tmp += ABias[row];
+            if (tmp >= 0)
+                y[row] = tmp;
+            else
+                y[row] = 0;
+        }
+
+    }
+
+
+}
 
 void reluSPMV(std::vector<float> input, int inputRowSize, \
     std::vector<float> kernel, int kernelRowSize, int kernelColSize, \
@@ -131,27 +456,65 @@ void reluSPMV(std::vector<float> input, int inputRowSize, \
     std::vector<float>& output, int outputRowSize)
 {
 
-    float* d_output, *d_kernel, *d_input, *d_kernelBias;
+    float* d_output, * d_kernel, * d_output1, * d_output2, * d_kernel1, * d_kernel2, * d_input, * d_kernelBias, * d_kernelBias1, * d_kernelBias2;
     int inputSize = sizeof(float) * inputRowSize, outputSize = sizeof(float) * outputRowSize;
     int kernelSize = sizeof(float) * kernelRowSize * kernelColSize, kernelBiasSize = kernelRowSize * sizeof(float);
-//malloc
+
+    std::vector<float> kernel1(120 * 84, 1);
+    std::vector<float> kernel2(84 * 10, 1), kernelBias1(84, 1), kernelBias2(10, 1);
+    //malloc
     checkCudaErrors(cudaMalloc(&d_output, outputSize));
-    checkCudaErrors(cudaMalloc(&d_kernel,kernelSize));
+    checkCudaErrors(cudaMalloc(&d_output1, outputSize));
+    checkCudaErrors(cudaMalloc(&d_output2, outputSize));
+    checkCudaErrors(cudaMalloc(&d_kernel, kernelSize));
     checkCudaErrors(cudaMalloc(&d_input, inputSize));
     checkCudaErrors(cudaMalloc(&d_kernelBias, kernelBiasSize));
+    checkCudaErrors(cudaMalloc(&d_kernel1, 120 * 84 * sizeof(float)));
+    checkCudaErrors(cudaMalloc(&d_kernelBias1, 84 * sizeof(float)));
+    checkCudaErrors(cudaMalloc(&d_kernel2, 84 * 10 * sizeof(float)));
+    checkCudaErrors(cudaMalloc(&d_kernelBias2, 10 * sizeof(float)));
 
     //memcpy H2D
     checkCudaErrors(cudaMemcpy(d_input, input.data(), inputSize, cudaMemcpyHostToDevice));
     checkCudaErrors(cudaMemcpy(d_kernel, kernel.data(), kernelSize, cudaMemcpyHostToDevice));
     checkCudaErrors(cudaMemcpy(d_kernelBias, kernelBias.data(), kernelBiasSize, cudaMemcpyHostToDevice));
 
-    //call cudakernel M row, N col
-    dim3 dimGrid((kernelRowSize + 3) / 4);
-    dim3 dimBlock(32, 4);
-    reluGemv<< < dimGrid, dimBlock >> > (d_kernel, d_kernelBias, d_input, d_output, kernelRowSize, kernelColSize);
+    checkCudaErrors(cudaMemcpy(d_kernel1, kernel1.data(), 120 * 84 * sizeof(float), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_kernelBias1, kernelBias1.data(), 84 * sizeof(float), cudaMemcpyHostToDevice));
 
+    checkCudaErrors(cudaMemcpy(d_kernel2, kernel2.data(), 84 * 10 * sizeof(float), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_kernelBias2, kernelBias2.data(), 10 * sizeof(float), cudaMemcpyHostToDevice));
+
+    //call cudakernel M row, N col
+    if (inputRowSize == 256)
+    {
+        dim3 block(32, 32);
+        relugemv_fusion << < 1, block >> > (d_kernel, d_kernelBias, d_input, 
+            d_kernel1, d_kernelBias1, 
+            d_kernel2, d_kernelBias2, d_output2, d_output, 0);
+            // printf("1111\n");
+        cudaDeviceSynchronize();
+    }
+    else if (inputRowSize == 120)
+    {
+        dim3 block(32, 32);
+        relugemv_new2 << < 1, block >> > (d_kernel, d_kernelBias, d_input, d_output, kernelRowSize, kernelColSize);
+        cudaDeviceSynchronize();
+    }
+    else if (inputRowSize == 84)
+    {
+        dim3 block(32, 32);
+        relugemv_new3 << < 1, block >> > (d_kernel, d_kernelBias, d_input, d_output, kernelRowSize, kernelColSize);
+        cudaDeviceSynchronize();
+    }
+    cudaError_t cudaError = cudaGetLastError();
+    if (cudaError != cudaSuccess) {
+
+        fprintf(stderr, "CUDA error111: %s %d\n", cudaGetErrorString(cudaError), inputRowSize);
+        // 处理错误
+    }
     //memcpy D2H
-    checkCudaErrors(cudaMemcpy(output.data(), d_output, outputSize, cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaMemcpy(output.data(), d_output2, 10 * sizeof(float), cudaMemcpyDeviceToHost));
     
     //cudaFree
     cudaFree(d_output);
@@ -169,45 +532,10 @@ void reluSPMV(std::vector<float> input, int inputRowSize, \
                 tmp += kernel[i * kernelColSize + k] * input[k];
             tmp += kernelBias[i];
             if (tmp >= 0) output[i] = tmp;
-            else output[i] = 0;
-            
+            else output[i] = 0;    
     }
 #endif
 }
-void reluSPMVCheck(std::vector<float> input, int inputRowSize, \
-    std::vector<float> kernel, int kernelRowSize, int kernelColSize, \
-    std::vector<float> kernelBias,\
-    std::vector<float>& output, int outputRowSize)
-{
-
-    for (int i = 0; i < outputRowSize; i++)
-    {
-            double tmp = 0;
-            for (int k = 0; k < inputRowSize; k++)
-                tmp += kernel[i * kernelColSize + k] * input[k];
-            tmp += kernelBias[i];
-            if (tmp >= 0) output[i] = tmp;
-            else output[i] = 0;
-    }
-}
-void reluGEMM(vector<float>& input, int inputRowSize, int inputColSize, \
-    vector<float>& kernel, int kernelRowSize, int kernelColSize, \
-    vector<float>& output, int outputRowSize, int outputColSize)
-{
-    for (int i = 0; i < outputRowSize; i++)
-    {
-        for (int j = 0; j < outputColSize; j++)
-        {
-
-            double tmp = 0;
-            for (int k = 0; k < inputColSize; k++)
-                tmp += input[i * inputColSize + k] * kernel[k * kernelColSize + j];
-            if (tmp >= 0) output[i * outputColSize + j] = tmp;
-            else output[i * outputColSize + j] = 0;
-        }
-    }
-}
-
 void print_M(vector<float>& A, int rowS, int colS)
 {
     for (int i = 0; i < rowS; i++)
@@ -220,6 +548,55 @@ void print_M(vector<float>& A, int rowS, int colS)
     }
 
 }
+void reluSPMVCheck(std::vector<float> input, int inputRowSize, \
+    std::vector<float> kernel, int kernelRowSize, int kernelColSize, \
+    std::vector<float> kernelBias,\
+    std::vector<float>& output, int outputRowSize)
+{
+    std::vector<float> outTmp1(120, 0), outTmp2(84, 0);
+    outputRowSize = 120, inputRowSize = 256, kernelColSize = inputRowSize;
+    for (int i = 0; i < outputRowSize; i++)
+    {
+        double tmp = 0;
+        for (int k = 0; k < inputRowSize; k++)
+            tmp += kernel[i * kernelColSize + k] * input[k];
+        tmp += kernelBias[i];
+        if (tmp >= 0) outTmp1[i] = tmp;
+        else outTmp1[i] = 0;
+    }
+
+    printf("-----------------------check 1!-----------------------\n");
+    print_M(outTmp1, 120, 1);
+
+    outputRowSize = 84, inputRowSize = 120, kernelColSize = inputRowSize;
+    for (int i = 0; i < outputRowSize; i++)
+    {
+        double tmp = 0;
+        for (int k = 0; k < inputRowSize; k++)
+            tmp += 1 * outTmp1[k];
+        tmp += kernelBias[i];
+        if (tmp >= 0) outTmp2[i] = tmp;
+        else outTmp2[i] = 0;
+    }
+    printf("-----------------------check 2!-----------------------\n");
+    print_M(outTmp2, 84, 1);
+
+    outputRowSize = 10, inputRowSize = 84, kernelColSize = inputRowSize;
+    for (int i = 0; i < outputRowSize; i++)
+    {
+        double tmp = 0;
+        for (int k = 0; k < inputRowSize; k++)
+            tmp += 1 * outTmp2[k];
+        tmp += kernelBias[i];
+        if (tmp >= 0) output[i] = tmp;
+        else output[i] = 0;
+    }
+    printf("-----------------------check 3!-----------------------\n");
+    print_M(output, 10, 1);
+}
+
+
+
 int main()
 {
     
@@ -232,16 +609,17 @@ int main()
     init_ij(kernel, inputRowSize, outputRowSize);
     // GEMM(input, inputRowSize, inputColSize,kernel, kernelRowSize, kernelColSize, output, outputRowSize, outputColSize);
     // reluSPMV(input, inputRowSize, inputColSize,kernel, kernelRowSize, kernelColSize, output, outputRowSize, outputColSize);
+
+    printf("-----------------------input!-----------------------\n");
+    print_M(kernel, inputRowSize, outputRowSize);
     reluSPMV(input, inputRowSize, \
-    kernel, outputRowSize, inputRowSize, \
+        kernel, outputRowSize, inputRowSize, \
     kernelBias,\
     output, outputRowSize);
-    print_M(output, outputRowSize, 1);
+    print_M(output, 10, 1);
     reluSPMVCheck(input, inputRowSize, \
     kernel, outputRowSize, inputRowSize, \
     kernelBias,\
     output, outputRowSize);
-    printf("-----------------------check!-----------------------\n");
-    print_M(output, outputRowSize, 1);
 
 }
