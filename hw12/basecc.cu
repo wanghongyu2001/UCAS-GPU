@@ -665,7 +665,7 @@ void init_ij(std::vector<float>& A, int n, int m, int c)
 }
 
 
-__global__ void _conv2d(float* input, float* output, float* output_pool, const float* __restrict__ kernel,
+__global__ void _conv2d(float* input,  float* output_pool, const float* __restrict__ kernel,
     const float* __restrict__ kernel_bias,
     int inputChannel, int outputChannel, int inputSize, int kernelSize) //是方形
 { //放入一个channle的大小，每个block处理一个output channel,大小是inputSize, 还是多个output channel？
@@ -694,28 +694,18 @@ __global__ void _conv2d(float* input, float* output, float* output_pool, const f
                     ic * kernelSize * kernelSize + destY * kernelSize + destX;
                 ker_s[destY][destX] = kernel[ker_pos];
             }
-            __syncthreads();
+            __syncthreads(); //奇怪，这个同步不能去
 
             if (threadIdx.y < inputSize && threadIdx.x < inputSize)
             {
                 int in_pos = ic * inputSize * inputSize + threadIdx.y * inputSize + threadIdx.x;
                 in_s[destY][destX] = input[in_pos];
                 int a = 1;
-                __syncthreads();
-
             }
 
             __syncthreads();
 
-            // if (ic == 0 && oc == 0 && outputChannel > 0 && threadIdx.x == 2 && threadIdx.y == 0)
-            // {
-            //     for (int i = 0; i < 12; i++)
-            //         for (int j = 0; j < 12; j++)
-            //         {
-            //             in_s[i][j] = input[ic * inputSize * inputSize + i * inputSize + j];
-            //             printf("%d %d %d oc %d ic %d, in_[%d][%d] = %f input = %f\n", blockIdx.x, blockIdx.y, blockIdx.z, oc, ic, i, j, in_s[i][j], input[ic * inputSize * inputSize + i * inputSize + j]);
-            //         }
-            // }
+
 
             if (srcY + kernelSize - 1 < inputSize && srcX + kernelSize - 1 < inputSize)
             {
@@ -734,27 +724,13 @@ __global__ void _conv2d(float* input, float* output, float* output_pool, const f
 
 
         }
-        __syncthreads();
 
-        int out_pos = oc * outputSize * outputSize + destY * outputSize + destX;
-        if (destY < outputSize && destX < outputSize)
-            output[out_pos] = accum + tmp_bias;
+
 
         if (destY < outputSize && destX < outputSize)
             in_pool_s[destY][destX] = accum + tmp_bias;
 
         __syncthreads();
-        // if (oc == 4 && outputChannel > 10 && threadIdx.x == 0 && threadIdx.y == 0)
-        // {
-        //     for (int i = 0; i < 8; i++)
-        //         for (int j = 0; j < 8; j++)
-        //         {
-        //             printf("oc %d outputSize %d in_pool_[%d][%d] = %f\n", oc, outputSize, i, j, in_pool_s[i][j]);
-        //         }
-
-        // }
-        // __syncthreads();
-        //maxpool + relu
 
 
         int output_pool_size = outputSize / 2;
@@ -767,16 +743,9 @@ __global__ void _conv2d(float* input, float* output, float* output_pool, const f
                 for (int j = 0; j < kernel_pool_size; j++)
                 {
 
-                    // out_pos = oc * outputSize * outputSize + (srcY * kernel_pool_size + i) * outputSize + srcX * kernel_pool_size + j;
                     tmp_max = max(tmp_max,in_pool_s[srcY * kernel_pool_size + i][srcX * kernel_pool_size + j]);
-                    // if (oc == 4 && outputChannel > 10 && threadIdx.x == 3 && threadIdx.y == 2)
-                    // {
-                    //     // printf("accum = %f inpool_s[%d][%d] = %f\n", accum, srcY * kernel_pool_size + i, srcX * kernel_pool_size + j,
-                    //     //     in_pool_s[srcY * kernel_pool_size + i][srcX * kernel_pool_size + j]);
-                    // }
                 }
             int out_pos = oc * output_pool_size * output_pool_size + srcY * output_pool_size + srcX;
-            output_pool[out_pos] = 1.2222;
             if (tmp_max >= 0)
             {
                 
@@ -788,7 +757,7 @@ __global__ void _conv2d(float* input, float* output, float* output_pool, const f
             }
         }
 
-        __syncthreads();
+
 
     }
 }
@@ -846,7 +815,7 @@ int main(int argc, char* argv[]) {
     // }
     // std::cout<<std::endl;
 
-
+    cudaFree(0);
     // 开始计时，使用chrono计时，不支持其它计时方式
     auto start = std::chrono::high_resolution_clock::now();
 
@@ -953,7 +922,7 @@ int main(int argc, char* argv[]) {
 
         dim3 block(28, 28);
         dim3 grid(16);
-        _conv2d << < grid, block >> > (d_input + d_input_size * stream_tid, d_outputTmp, d_output1 + d_output1_size * stream_tid, d_conv1_weight,
+        _conv2d << < grid, block >> > (d_input + d_input_size * stream_tid, d_output1 + d_output1_size * stream_tid, d_conv1_weight,
             d_conv1_bias, 1, 6, 28, 5);
 
         cudaDeviceSynchronize();
@@ -967,7 +936,7 @@ int main(int argc, char* argv[]) {
         // printTensor(output1, 12, 12, 6);
 
         // cudaDeviceSynchronize();
-        _conv2d << < grid, block >> > (d_output1 + d_output1_size * stream_tid, d_outputTmp, d_output2 + d_output2_size * stream_tid, d_conv2_weight,
+        _conv2d << < grid, block >> > (d_output1 + d_output1_size * stream_tid, d_output2 + d_output2_size * stream_tid, d_conv2_weight,
             d_conv2_bias, 6, 16, 12, 5);
         cudaDeviceSynchronize();
 

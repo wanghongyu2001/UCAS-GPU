@@ -24,8 +24,8 @@ using namespace std;
 #define FETCH_FLOAT4(pointer) (reinterpret_cast<float4 *>(&(pointer))[0])
 
 
-const int inputRowSize = 28, inputColSize = 28, inputChannel = 1;
-const int outputRowSize = 24, outputColSize = 24, outputChannel = 6;
+int inputRowSize = 28, inputColSize = 28, inputChannel = 1;
+ int outputRowSize = 24, outputColSize = 24, outputChannel = 6;
 const int kernelRowSize = 5, kernelColSize = 5;
 const int kernelOCSize = kernelColSize * kernelRowSize * inputChannel;
 const int THREAD_HEIGHT = 1, THREAD_WIDTH = 1,                                         // 一个线程负责的元素数
@@ -342,10 +342,10 @@ void conv2d(std::vector<float>  input, int inputRowSize, int inputColSize, int i
     checkCudaErrors(cudaMemcpy(d_kernel, kernel.data(), kernelSize, cudaMemcpyHostToDevice));
     checkCudaErrors(cudaMemcpy(d_kernelBias, kernelBias.data(), kernelBiasSize, cudaMemcpyHostToDevice));
 
-    v1_convolution<BLOCK_HEIGHT, BLOCK_WIDTH, KERNEL_HEIGHT, KERNEL_WIDTH, MALLOC_TEMP_SIZE,
-        MALLOC_KERNEL_HEIGHT, MALLOC_KERNEL_WIDTH, MALLOC_BLOCK_HEIGHT, MALLOC_BLOCK_WIDTH>
-        << <dimGrid, dimBlock >> > (d_input, d_output, d_kernel, d_kernelBias,
-            N, inputChannel, inputRowSize, inputColSize, outputChannel, outputRowSize, outputColSize, kernelRowSize, kernelColSize);
+    // v1_convolution<BLOCK_HEIGHT, BLOCK_WIDTH, KERNEL_HEIGHT, KERNEL_WIDTH, MALLOC_TEMP_SIZE,
+    //     MALLOC_KERNEL_HEIGHT, MALLOC_KERNEL_WIDTH, MALLOC_BLOCK_HEIGHT, MALLOC_BLOCK_WIDTH>
+    //     << <dimGrid, dimBlock >> > (d_input, d_output, d_kernel, d_kernelBias,
+    //         N, inputChannel, inputRowSize, inputColSize, outputChannel, outputRowSize, outputColSize, kernelRowSize, kernelColSize);
     cudaDeviceSynchronize();
     checkCudaErrors(cudaMemcpy(output.data(), d_output, outputSize, cudaMemcpyDeviceToHost));
 
@@ -385,7 +385,7 @@ void init_ij(vector<float>& A, int n, int m, int c)
         for (int j = 0; j < n; j++)
         {
             for (int k = 0; k < m; k++)
-                A[i * n * m + j * m + k] = k + j;
+                A[i * n * m + j * m + k] = -k + j + i;
         }
 }
 void init_one(vector<float>& A, int n, int m, int c)
@@ -478,6 +478,609 @@ void print_M(vector<float>& A, int rowS, int colS, int chaS)
     }
     
 }
+
+#define OFFSET(row, col, ld) ((row) * (ld) + (col))
+
+__global__ void conv2d1_old(float* input, float* output, const float* __restrict__ kernel,
+    const float* __restrict__ kernel_bias,
+    int inputChannel, int outputChannel, int inputSize, int kernelSize) //是方形
+{
+    //放入一个channle的大小，每个block处理一个output channel,大小是inputSize, 还是多个output channel？
+    __shared__ float in_s[28][28];
+    __shared__ float ker_s[5][5];
+    //确定要处理哪个outputchannel, 2d grid
+    int oc = blockIdx.x + blockIdx.y * blockDim.x;
+    int outputSize = inputSize - kernelSize + 1;
+    //循环遍历所有的inputchannel
+
+    for (int ic = 0; ic < inputChannel; ic++)
+    {
+
+        //确定处理output的元素位置和input的位置；
+        int destY = threadIdx.y, destX = threadIdx.x;
+        int srcY = destY , srcX = destX ;
+        // printf("intputSize = %d, destY = %d, destX = %d\n", inputSize, destY, destX);
+        //先把input kernel的数据放到共享内存
+        if (destY < kernelSize && destX < kernelSize)
+        {
+            int ker_pos = oc * kernelSize * kernelSize * inputChannel +
+                ic * kernelSize * kernelSize + destY * kernelSize + destX;
+            ker_s[destY][destX] = kernel[ker_pos];
+        }
+        if (destY < inputSize && destX < inputSize)
+        {
+            int in_pos = ic * inputSize * inputSize + destY * inputSize + destX;
+            in_s[destY][destX] = input[in_pos];
+            // printf("intput[%d] = %f assign in_s[%d][%d] =%f\n", in_pos, input[in_pos], destY, destX, in_s[destY][destX]);
+        }
+        //数据同步
+        __syncthreads();
+        #if 0
+        if (threadIdx.x == 0 && threadIdx.y == 0 && oc == 2)
+        {
+            for (int i = 0; i < inputSize; i++)
+                for (int j = 0; j < inputSize; j++)
+                {
+                    printf("in_s[%d][%d] = %f\n", i, j, in_s[i][j]);
+                    printf("ker_s[%d][%d] = %f\n", i, j, ker_s[i][j]);
+                }
+        }
+        #endif
+        //计算‘
+        float accum = 0;
+        if (srcY + kernelSize - 1 < inputSize && srcX + kernelSize - 1 < inputSize)
+        {
+            for (int i = 0; i < kernelSize; i++)
+            {
+                for (int j = 0; j < kernelSize; j++)
+                {
+                    accum += in_s[srcY + i][srcX + j] * ker_s[i][j];
+                    // if (oc == 2) printf("acc %f = in_s[%d][%d] = %f, ker_s[%d][%d] = %f \n", accum, srcY + i,
+                    //     srcX + j, in_s[srcY + i][srcX + j] ,i, j, ker_s[i][j]);
+                }
+            }
+            int out_pos = oc * outputSize * outputSize + destY * outputSize + destX;
+            output[out_pos] = accum + kernel_bias[oc];
+            // if (oc == 2)
+            // {
+            //     // printf("11111\n");
+            //     printf("oc = 2, output[%d] = %f\n", out_pos, accum);
+            // }
+            
+        }
+    }
+}
+
+__global__ void conv2d1(float* input, float* output,float* output_pool, const float* __restrict__ kernel,
+    const float* __restrict__ kernel_bias,
+    int inputChannel, int outputChannel, int inputSize, int kernelSize) //是方形
+{
+    //放入一个channle的大小，每个block处理一个output channel,大小是inputSize, 还是多个output channel？
+    __shared__ float in_s[28][28];
+    __shared__ float in_pool_s[28][28];
+    __shared__ float ker_s[5][5];
+    //确定要处理哪个outputchannel, 2d grid
+    int oc = blockIdx.x + blockIdx.y * blockDim.x;
+    float tmp_bias = kernel_bias[oc];
+    int outputSize = inputSize - kernelSize + 1;
+
+    for (int ic = 0; ic < inputChannel; ic++)
+    {
+        int destY = threadIdx.y, destX = threadIdx.x;
+        int srcY = destY, srcX = destX;
+        if (destY < kernelSize && destX < kernelSize)
+        {
+            int ker_pos = oc * kernelSize * kernelSize * inputChannel +
+                ic * kernelSize * kernelSize + destY * kernelSize + destX;
+            ker_s[destY][destX] = kernel[ker_pos];
+        }
+        if (destY < inputSize && destX < inputSize)
+        {
+            int in_pos = ic * inputSize * inputSize + destY * inputSize + destX;
+            in_s[destY][destX] = input[in_pos];
+        }
+
+        __syncthreads();
+
+
+        float accum = 0;
+        if (srcY + kernelSize - 1 < inputSize && srcX + kernelSize - 1 < inputSize)
+        {
+            for (int i = 0; i < kernelSize; i++)
+            {
+                for (int j = 0; j < kernelSize; j++)
+                {
+                    accum += in_s[srcY + i][srcX + j] * ker_s[i][j];
+                }
+            }
+            int out_pos = oc * outputSize * outputSize + destY * outputSize + destX;
+            // output[out_pos] = accum + tmp_bias;
+
+
+            if (destY < outputSize && destX < outputSize)
+                in_pool_s[destY][destX] = accum + tmp_bias;
+        }
+        __syncthreads();
+        //maxpool + relu
+        int output_pool_size = outputSize / 2;
+        int kernel_pool_size = 2;
+
+        if (srcY  < output_pool_size && srcX < output_pool_size)
+        {
+            accum = 0;
+            for (int i = 0; i < kernel_pool_size; i++)
+                for (int j = 0; j < kernel_pool_size; j++)
+                {
+                    accum = max(accum, in_pool_s[srcY * kernel_pool_size + i][srcX * kernel_pool_size + j]);
+                }
+            if (accum > 0)
+            {
+                int out_pos = oc * output_pool_size * output_pool_size + srcY * output_pool_size + srcX;
+                output_pool[out_pos] = accum;
+            }
+        }
+    }
+}
+
+__global__ void conv2d2(float* input, float* output_pool, const float* __restrict__ kernel,
+    const float* __restrict__ kernel_bias,
+    int inputChannel, int outputChannel, int inputSize, int kernelSize) //是方形
+{
+    //放入一个channle的大小，每个block处理一个output channel,大小是inputSize, 还是多个output channel？
+    __shared__ float in_s[28][28];
+    __shared__ float in_pool_s[28][28];
+    __shared__ float ker_s[5][5];
+    //确定要处理哪个outputchannel, 2d grid
+    int oc = blockIdx.x + blockIdx.y * blockDim.x;
+    float tmp_bias = kernel_bias[oc];
+    int outputSize = inputSize - kernelSize + 1;
+
+        int destY = threadIdx.y, destX = threadIdx.x;
+        int srcY = destY, srcX = destX;
+    if (oc < outputChannel)
+    {
+        
+    
+    float accum = 0;
+    for (int ic = 0; ic < inputChannel; ic++)
+    {
+        if (destY < kernelSize && destX < kernelSize)
+        {
+            int ker_pos = oc * kernelSize * kernelSize * inputChannel +
+                ic * kernelSize * kernelSize + destY * kernelSize + destX;
+            ker_s[destY][destX] = kernel[ker_pos];
+        }
+        if (destY < inputSize && destX < inputSize)
+        {
+            int in_pos = ic * inputSize * inputSize + destY * inputSize + destX;
+            in_s[destY][destX] = input[in_pos];
+        }
+
+        __syncthreads();
+
+
+        
+        if (srcY + kernelSize - 1 < inputSize && srcX + kernelSize - 1 < inputSize)
+        {
+            for (int i = 0; i < kernelSize; i++)
+            {
+                for (int j = 0; j < kernelSize; j++)
+                {
+                    accum += in_s[srcY + i][srcX + j] * ker_s[i][j];
+                }
+            }
+
+        }
+    
+        
+    }
+    
+    int out_pos = oc * outputSize * outputSize + destY * outputSize + destX;
+            // output[out_pos] = accum + tmp_bias;
+    if (destY < outputSize && destX < outputSize)
+        in_pool_s[destY][destX] = accum + tmp_bias;
+
+    __syncthreads();
+        //maxpool + relu
+    
+    
+    int output_pool_size = outputSize / 2;
+    int kernel_pool_size = 2;
+
+    if (srcY < output_pool_size && srcX < output_pool_size)
+    {
+        accum = 0;
+        for (int i = 0; i < kernel_pool_size; i++)
+            for (int j = 0; j < kernel_pool_size; j++)
+            {
+                accum = max(accum, in_pool_s[srcY * kernel_pool_size + i][srcX * kernel_pool_size + j]);
+            }
+        if (accum > 0)
+        {
+            int out_pos = oc * output_pool_size * output_pool_size + srcY * output_pool_size + srcX;
+            output_pool[out_pos] = accum;
+        }
+        else 
+        {
+            output_pool[out_pos] = 0;
+        }
+    }
+    
+    }
+}
+
+
+
+__global__ void _conv2d(float* input,  float* output_pool, const float* __restrict__ kernel,
+    const float* __restrict__ kernel_bias,
+    int inputChannel, int outputChannel, int inputSize, int kernelSize) //是方形
+{ //放入一个channle的大小，每个block处理一个output channel,大小是inputSize, 还是多个output channel？
+
+    //放入一个channle的大小，每个block处理一个output channel,大小是inputSize, 还是多个output channel？
+    __shared__ float in_s[28][28];
+    __shared__ float in_pool_s[28][28];
+    __shared__ float ker_s[5][5];
+    //确定要处理哪个outputchannel, 2d grid
+    int oc = blockIdx.x + blockIdx.y * blockDim.x;
+    float tmp_bias = kernel_bias[oc];
+    int outputSize = inputSize - kernelSize + 1;
+
+    int destY = threadIdx.y, destX = threadIdx.x;
+    int srcY = destY, srcX = destX;
+    if (oc < outputChannel)
+    {
+
+
+        float accum = 0;
+        for (int ic = 0; ic < inputChannel; ic++)
+        {
+            if (destY < kernelSize && destX < kernelSize)
+            {
+                int ker_pos = oc * kernelSize * kernelSize * inputChannel +
+                    ic * kernelSize * kernelSize + destY * kernelSize + destX;
+                ker_s[destY][destX] = kernel[ker_pos];
+            }
+            __syncthreads(); //奇怪，这个同步不能去
+
+            if (threadIdx.y < inputSize && threadIdx.x < inputSize)
+            {
+                int in_pos = ic * inputSize * inputSize + threadIdx.y * inputSize + threadIdx.x;
+                in_s[destY][destX] = input[in_pos];
+                int a = 1;
+            }
+
+            __syncthreads();
+
+
+
+            if (srcY + kernelSize - 1 < inputSize && srcX + kernelSize - 1 < inputSize)
+            {
+                for (int i = 0; i < kernelSize; i++)
+                {
+                    for (int j = 0; j < kernelSize; j++)
+                    {
+                        int ker_pos = oc * kernelSize * kernelSize * inputChannel +
+                            ic * kernelSize * kernelSize + i * kernelSize + j;
+                        // accum += input[ic * inputSize * inputSize + (srcY + i) * inputSize + srcX + j] * kernel[ker_pos];
+                        accum += in_s[srcY + i][srcX + j] * ker_s[i][j];
+                    }
+                }
+
+            }
+
+
+        }
+
+
+
+        if (destY < outputSize && destX < outputSize)
+            in_pool_s[destY][destX] = accum + tmp_bias;
+
+        __syncthreads();
+
+
+        int output_pool_size = outputSize / 2;
+        int kernel_pool_size = 2;
+
+        if (srcY < output_pool_size && srcX < output_pool_size)
+        {
+            float tmp_max = 0;
+            for (int i = 0; i < kernel_pool_size; i++)
+                for (int j = 0; j < kernel_pool_size; j++)
+                {
+
+                    tmp_max = max(tmp_max, in_pool_s[srcY * kernel_pool_size + i][srcX * kernel_pool_size + j]);
+                }
+            int out_pos = oc * output_pool_size * output_pool_size + srcY * output_pool_size + srcX;
+            if (tmp_max >= 0)
+            {
+
+                output_pool[out_pos] = tmp_max;
+            }
+            else
+            {
+                output_pool[out_pos] = 0;
+            }
+        }
+
+
+
+    }
+}
+// void test_conv1()
+// {
+//     std::vector<float> input(inputRowSize * inputColSize * inputChannel, 0);
+//     std::vector<float> kernel(kernelRowSize * kernelColSize * inputChannel * outputChannel, 0);
+//     std::vector<float> output(outputRowSize * outputColSize * outputChannel, 0);
+//     std::vector<float> output_pool(12 * 12 * 6, 0);
+//     std::vector<float> kernelBias(outputChannel, 1.1);
+//     init_ij(input, inputRowSize, inputColSize, inputChannel);
+//     init_one(kernel, kernelRowSize, kernelColSize, inputChannel * outputChannel);
+//     float* d_input, * d_output, * d_kernel, * d_kernelBias, * d_kernel2, * d_kernelBias2, * d_output_pool, * d_output_pool2;
+
+//     outputRowSize = 24, outputColSize = 24, outputChannel = 6;
+//     int inputSize = inputRowSize * inputColSize * inputChannel * sizeof(float);
+//     int outputSize = outputRowSize * outputColSize * outputChannel * sizeof(float);
+//     int kernelSize = kernelColSize * kernelRowSize * inputChannel * outputChannel * sizeof(float);
+//     int kernelBiasSize = outputChannel * sizeof(float);
+//     int kernelSize1 = 5 * 5 *  * sizeof(float);
+//     int kernelBiasSize1 = outputChannel * sizeof(float);
+//     checkCudaErrors(cudaMalloc(&d_input, inputSize));
+//     checkCudaErrors(cudaMalloc(&d_output, outputSize));
+//     checkCudaErrors(cudaMalloc(&d_kernel, kernelSize));
+//     checkCudaErrors(cudaMalloc(&d_kernelBias, kernelBiasSize));
+//     checkCudaErrors(cudaMalloc(&d_kernel2, kernelSize));
+//     checkCudaErrors(cudaMalloc(&d_kernelBias2, kernelBiasSize));
+//     checkCudaErrors(cudaMalloc(&d_output_pool, 12 * 12 * 6 * sizeof(float)));
+//     checkCudaErrors(cudaMalloc(&d_output_pool2, 12 * 12 * 6 * sizeof(float)));
+
+//     checkCudaErrors(cudaMemcpy(d_input, input.data(), inputSize, cudaMemcpyHostToDevice));
+//     checkCudaErrors(cudaMemcpy(d_kernel, kernel.data(), kernelSize, cudaMemcpyHostToDevice));
+//     checkCudaErrors(cudaMemcpy(d_kernelBias, kernelBias.data(), kernelBiasSize, cudaMemcpyHostToDevice));
+//     dim3 block(28, 28);
+//     dim3 grid(6);
+//     conv2d2 << < grid, block >> > (d_input, d_output_pool, d_kernel, d_kernelBias, 1, 6, 28, 5);
+//     conv2d2 << < grid, block >> > (d_output_pool, d_output_pool2, d_kernel2, d_kernelBias2, 1, 6, 28, 5);
+//     cudaDeviceSynchronize();
+//     checkCudaErrors(cudaMemcpy(output.data(), d_output, 24 * 24 * 6 * sizeof(float), cudaMemcpyDeviceToHost));
+//     checkCudaErrors(cudaMemcpy(output_pool.data(), d_output_pool, 12 * 12 * 6 * sizeof(float), cudaMemcpyDeviceToHost));
+
+//     print_M(output, 24, 24, 6);
+//     print_M(output_pool, 12, 12, 6);
+
+// }
+
+// void check_fusion()
+// {
+
+
+//     for (int c = 0; c < outputChannel; c++)
+//     {
+//         for (int i = 0; i < outputRowSize; i++)
+//         {
+//             for (int j = 0; j < outputColSize; j++)
+//             {
+//                 //elementwise + reduce
+//                 double tmp = 0;
+//                 for (int tc = 0; tc < inputChannel; tc++)
+//                 {
+//                     for (int row = i; row < i + kernelRowSize; row++)
+//                     {
+//                         for (int col = j; col < j + kernelColSize; col++)
+//                         {
+//                             tmp += kernel[c * kernelRowSize * kernelColSize * inputChannel + \
+//                                 tc * kernelColSize * kernelRowSize + \
+//                                 (row - i) * kernelColSize + (col - j)] * \
+//                                 input[tc * inputRowSize * inputColSize + row * inputColSize + col];
+//                         }
+//                     }
+//                 }
+
+//                 output[c * outputRowSize * outputColSize + i * outputColSize + j] = tmp + kernelBias[c];
+
+//             }
+//         }
+//     }
+// }
+void test_conv_fusion()
+{
+    int input_size1 = 28 * 28 * 1 * sizeof(float),
+        input_size2 = 12 * 12 * 6 * sizeof(float);
+    std::vector<float> input1(28 * 28 * 1, 0);
+    std::vector<float> kernel1(5 * 5 * 6, 1);
+    std::vector<float> output_pool(12 * 12 * 6, 1);
+    std::vector<float> output(24 * 24 * 6, 0);
+    std::vector<float> output1(24 * 24 * 6, 0);
+    std::vector<float> output2(8 * 8 * 16, 0);
+    std::vector<float> input2(12 * 12 * 6, 0);
+    std::vector<float> kernel2(5 * 5 * 6 * 16, 1);
+    std::vector<float> output_pool2(4 * 4 * 16, 0);
+    std::vector<float> kernelBias1(6, 1);
+    std::vector<float> kernelBias2(16, 1);
+    init_ij(input1, 28, 28, 1);
+    // init_ij(kernel1, 5, 5, 6);
+    // init_ij(kernel2, 5, 5, 6 * 16);
+    // init_ij(input2, inputRowSize, inputColSize, inputChannel);
+    // init_one(kernel1, kernelRowSize, kernelColSize, inputChannel * outputChannel);
+    float* d_input1, * d_output1, * d_kernel1, * d_kernelBias1,
+        * d_kernel2, * d_kernelBias2, * d_output_pool, * d_output_pool2;
+
+    int input1Size = 28 * 28 * 1 * sizeof(float);
+    int output1Size = 12 * 12 * 6 * sizeof(float);
+    int kernel1Size = 5 * 5 * 6 * 1 * sizeof(float);
+    int kernelBias1Size = 6 * sizeof(float);
+    int kernel2Size = 5 * 5 * 6 * 16 *sizeof(float);
+    int kernelBias2Size = 16 * sizeof(float);
+    checkCudaErrors(cudaMalloc(&d_input1, input1Size));
+    checkCudaErrors(cudaMalloc(&d_output1, output1Size));
+    checkCudaErrors(cudaMalloc(&d_kernel1, kernel1Size));
+    checkCudaErrors(cudaMalloc(&d_kernelBias1, kernelBias1Size));
+    checkCudaErrors(cudaMalloc(&d_kernel2, kernel2Size));
+    checkCudaErrors(cudaMalloc(&d_kernelBias2, kernelBias2Size));
+    checkCudaErrors(cudaMalloc(&d_output_pool, 12 * 12 * 6 * sizeof(float)));
+    checkCudaErrors(cudaMalloc(&d_output_pool2, 4 * 4 * 16 * sizeof(float)));
+
+    checkCudaErrors(cudaMemcpy(d_input1, input1.data(), input1Size, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_kernel1, kernel1.data(), kernel1Size, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_kernelBias1, kernelBias1.data(), kernelBias1Size, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_kernel2, kernel2.data(), kernel2Size, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_kernelBias2, kernelBias2.data(), kernelBias2Size, cudaMemcpyHostToDevice));
+    dim3 block(28, 28);
+    dim3 grid(16);
+    _conv2d << < grid, block >> > (d_input1, d_output_pool, d_kernel1, d_kernelBias1, 1, 6, 28, 5);
+    // checkCudaErrors(cudaMemcpy(d_output_pool, output_pool.data(), output_pool.size() * sizeof(float), cudaMemcpyHostToDevice));
+    cudaDeviceSynchronize();
+    _conv2d << < grid, block >> > (d_output_pool, d_output_pool2, d_kernel2, d_kernelBias2, 6, 16, 12, 5);
+    cudaDeviceSynchronize();
+    // checkCudaErrors(cudaMemcpy(output.data(), d_output, 24 * 24 * 6 * sizeof(float), cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaMemcpy(output_pool2.data(), d_output_pool2, 4 * 4 * 16 * sizeof(float), cudaMemcpyDeviceToHost));
+
+    // print_M(output, 24, 24, 6);
+    print_M(output_pool2, 4, 4, 16);
+    // check_fusion()
+    for (int c = 0; c < 6; c++)
+    {
+        for (int i = 0; i < 24; i++)
+        {
+            for (int j = 0; j < 24; j++)
+            {
+                //elementwise + reduce
+                double tmp = 0;
+                for (int tc = 0; tc < 1; tc++)
+                {
+                    for (int row = i; row < i +5; row++)
+                    {
+                        for (int col = j; col < j + 5; col++)
+                        {
+                            tmp += kernel1[c * 5 * 5 * tc + \
+                                tc * 5 * 5 + \
+                                (row - i) * 5 + (col - j)] * \
+                                input1[tc * 28 * 28 + row * 28 + col];
+                        }
+                    }
+                }
+
+                output1[c * 24 * 24 + i * 24 + j] = tmp + kernelBias1[c];
+
+            }
+        }
+        for (int i = 0; i < 12; i++)
+        {
+            for (int j = 0; j < 12; j++)
+            {
+                //relu + maxpool
+                double tmp = 0;
+                {
+                    for (int row = 2 * i; row < 2 * i + 2; row++)
+                    {
+                        for (int col = 2 * j; col < 2 * j + 2; col++)
+                        {
+                            if (output1[c * 24 * 24 + row * 24 + col] >= 0)
+                                tmp = max(output1[c * 24 * 24 + row * 24 + col], tmp);
+                        }
+                    }
+                }
+
+                output_pool[c * 12 * 12 + i * 12 + j] = tmp;
+
+            }
+        }
+    }
+    // print_M(output1, 24, 24, 6);
+    print_M(output_pool, 12, 12, 6);
+    for (int c = 0; c < 16; c++)
+    {
+        for (int i = 0; i < 8; i++)
+        {
+            for (int j = 0; j < 8; j++)
+            {
+                //elementwise + reduce
+                double tmp = 0;
+                for (int tc = 0; tc < 6; tc++)
+                {
+                    for (int row = i; row < i + 5; row++)
+                    {
+                        for (int col = j; col < j + 5; col++)
+                        {
+                            tmp += kernel2[c * 5 * 5 * tc + \
+                                tc * 5 * 5 + \
+                                (row - i) * 5 + (col - j)] * \
+                                output_pool[tc * 12 * 12 + row * 12 + col];
+                                // printf("tmp = %f, ker = %f, in = %f\n ", tmp, kernel2[c * 5 * 5 * tc + tc * 5 * 5 + \
+                                // (row - i) * 5 + (col - j)], \
+                                // output_pool[tc * 12 * 12 + row * 12 + col]);
+                        }
+                    }
+                }
+
+                output2[c * 8 * 8 + i * 8 + j] = tmp + kernelBias2[c];
+
+            }
+        }
+        for (int i = 0; i < 4 ; i++)
+        {
+            for (int j = 0; j < 4; j++)
+            {
+                //relu + maxpool
+                double tmp = 0;
+                {
+                    for (int row = 2 * i; row < 2 * i + 2; row++)
+                    {
+                        for (int col = 2 * j; col < 2 * j + 2; col++)
+                        {
+                            if (output2[c * 8 * 8 + row * 8 + col] >= 0)
+                                tmp = max(output2[c * 8 * 8 + row * 8 + col], tmp);
+                        }
+                    }
+                }
+
+                output_pool2[c * 4 * 4 + i * 4 + j] = tmp;
+
+            }
+        }
+    }
+    print_M(output2, 8 ,8, 16);
+    print_M(output_pool2, 4, 4, 16);
+}
+void test_conv2()
+{
+    int inputRowSize = 12, inputColSize = 12, inputChannel = 6;
+
+    outputRowSize = 8, outputColSize = 8, outputChannel = 16;
+    std::vector<float> input(inputRowSize * inputColSize * inputChannel, 0);
+    std::vector<float> kernel(kernelRowSize * kernelColSize * inputChannel * outputChannel, 0);
+    std::vector<float> output(outputRowSize * outputColSize * outputChannel, 0);
+    std::vector<float> output_pool(4 * 4 * 16, 0);
+    std::vector<float> kernelBias(outputChannel, 1.1);
+    init_ij(input, inputRowSize, inputColSize, inputChannel);
+    print_M(input, 12, 12, 6);
+    init_one(kernel, kernelRowSize, kernelColSize, inputChannel * outputChannel);
+    float* d_input, * d_output, * d_kernel, * d_kernelBias, * d_output_pool;
+    int inputSize = inputRowSize * inputColSize * inputChannel * sizeof(float);
+    int outputSize = outputRowSize * outputColSize * outputChannel * sizeof(float);
+    int kernelSize = kernelColSize * kernelRowSize * inputChannel * outputChannel * sizeof(float);
+    int kernelBiasSize = outputChannel * sizeof(float);
+    checkCudaErrors(cudaMalloc(&d_input, inputSize));
+    checkCudaErrors(cudaMalloc(&d_output, outputSize));
+    checkCudaErrors(cudaMalloc(&d_kernel, kernelSize));
+    checkCudaErrors(cudaMalloc(&d_kernelBias, kernelBiasSize));
+    checkCudaErrors(cudaMalloc(&d_output_pool, 4 * 4 * 16 * sizeof(float)));
+
+    checkCudaErrors(cudaMemcpy(d_input, input.data(), inputSize, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_kernel, kernel.data(), kernelSize, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_kernelBias, kernelBias.data(), kernelBiasSize, cudaMemcpyHostToDevice));
+    dim3 block(28, 28);
+    dim3 grid(18);
+    conv2d2 << < grid, block >> > (d_input, d_output_pool, d_kernel, d_kernelBias, 6, 16, 12, 5);
+    cudaDeviceSynchronize();
+    checkCudaErrors(cudaMemcpy(output.data(), d_output, 12 * 12 * 6 * sizeof(float), cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaMemcpy(output_pool.data(), d_output_pool, 4 * 4 * 16 * sizeof(float), cudaMemcpyDeviceToHost));
+
+    // print_M(output, 24, 24, 6);
+    print_M(output_pool, 4, 4,16);
+
+}
+
 int main()
 {
     std::vector<float> input(inputRowSize * inputColSize * inputChannel, 0);
@@ -487,15 +1090,15 @@ int main()
     init_ij(input, inputRowSize, inputColSize, inputChannel);
     init_one(kernel, kernelRowSize, kernelColSize, inputChannel * outputChannel);
 
-
-    conv2d(input, inputRowSize, inputColSize, inputChannel, \
-        kernel, kernelBias, kernelRowSize, kernelColSize, \
-        output, outputRowSize, outputColSize, outputChannel);
-    print_M(output, outputRowSize, outputColSize, outputChannel);
-    conv2dCheck(input, inputRowSize, inputColSize, inputChannel, \
-        kernel, kernelBias, kernelRowSize, kernelColSize, \
-        output, outputRowSize, outputColSize, outputChannel);
-    printf("-------------------------check!-------------------------\n");
-    print_M(output, outputRowSize, outputColSize, outputChannel);
+    test_conv_fusion();
+    // conv2d(input, inputRowSize, inputColSize, inputChannel, \
+    //     kernel, kernelBias, kernelRowSize, kernelColSize, \
+    //     output, outputRowSize, outputColSize, outputChannel);
+    // print_M(output, outputRowSize, outputColSize, outputChannel);
+    // conv2dCheck(input, inputRowSize, inputColSize, inputChannel, \
+    //     kernel, kernelBias, kernelRowSize, kernelColSize, \
+    //     output, outputRowSize, outputColSize, outputChannel);
+    // printf("-------------------------check!-------------------------\n");
+    // print_M(output, outputRowSize, outputColSize, outputChannel);
 
 }
