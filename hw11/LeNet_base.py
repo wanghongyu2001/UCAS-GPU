@@ -64,8 +64,10 @@ class LeNet(nn.Module):
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2(x)))
         x = x.view(-1, 16 * 4 * 4)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
+        # x = F.relu(self.fc1(x))
+        # x = F.relu(self.fc2(x))
+        x = (self.fc1(x))
+        x = (self.fc2(x))
         x = self.fc3(x)
         return x
 
@@ -92,6 +94,8 @@ optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
 # 训练模型
 for epoch in range(2):
     print('epoch ', epoch)
+    correct = 0
+    total = 0
     for inputs, labels in trainloader:
         inputs, labels = inputs.to('cuda'), labels.to('cuda')
         
@@ -101,6 +105,10 @@ for epoch in range(2):
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
+        _, predicted = torch.max(outputs.data, 1)
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()    
+    print(correct/total) 
 
 # 测试模型
 correct = 0
@@ -115,7 +123,24 @@ with torch.no_grad():
         correct += (predicted == labels).sum().item()
         
 print(correct/total)  
+fc1_weight = model.fc1.weight
+fc1_bias = model.fc1.bias
+fc2_weight = model.fc2.weight
+fc2_bias = model.fc2.bias
+fc3_weight = model.fc3.weight
+fc3_bias = model.fc3.bias
+
+
 
 # 导出模型参数，也可以自定义导出模型参数的文件格式，这里使用了最简单的方法，但请注意，如果改动了必须保证程序二能够正常读取
 for name, param in model.named_parameters():
     np.savetxt(os.path.join(script_dir, f'./{name}.txt'), param.detach().cpu().numpy().flatten())
+# 进行所需的运算
+result1 = fc3_weight @ fc2_weight @ fc1_weight
+result2 = fc3_weight @ fc2_weight @ fc1_bias + fc3_weight @ fc2_bias + fc3_bias
+
+# 将结果保存到文本文件
+np.savetxt(os.path.join(script_dir, f'./fc1.weight.txt'), result1.detach().cpu().numpy().flatten())
+np.savetxt(os.path.join(script_dir, f'./fc1.bias.txt'), result2.detach().cpu().numpy().flatten())
+# np.savetxt('fc4.weight.txt', result1.detach().cpu().numpy().flatten())
+# np.savetxt('fc4.bias.txt', result2.detach().cpu().numpy().flatten())
