@@ -239,9 +239,9 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
     inputChannel = 1, outputChannel = 6, inputSize = 28, kernelSize = 5;
 
 
-    __shared__ float in_s[6][28][28];
+    __shared__ float in_s[6][32][32];
     __shared__ float in_pool_s[28][28];
-    __shared__ float ker_s[16][5][5];
+    __shared__ float ker_s[16][6][6];
 
     __shared__ float output_pool[6][12][12];
     __shared__ float output_pool2[16 * 4 * 4];
@@ -252,13 +252,8 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
     int srcY = destY, srcX = destX;
     for (int ic = 0; ic < inputChannel; ic++)
     {
-
-        if (threadIdx.y < inputSize && threadIdx.x < inputSize)
-        {
             int in_pos = ic * inputSize * inputSize + threadIdx.y * inputSize + threadIdx.x;
-            in_s[ic][destY][destX] = input[in_pos];
-
-        }
+            in_s[ic][destY][destX] = input[in_pos];        
     }
     // __syncthreads();
     for (int oc = 0; oc < outputChannel; oc++)
@@ -266,15 +261,14 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
 
         float tmp_bias = kernel_bias[oc];
         float accum = 0;
+        int ker_start = oc * kernelSize * kernelSize * inputChannel;
+        int ker_y = threadIdx.x / 5, ker_x = threadIdx.x % 5;
+        if (threadIdx.y == 0)
         for (int ic = 0; ic < inputChannel; ic++)
-        {
-            if (destY < kernelSize && destX < kernelSize)
             {
-                int ker_pos = oc * kernelSize * kernelSize * inputChannel +
-                    ic * kernelSize * kernelSize + destY * kernelSize + destX;
-                ker_s[ic][destY][destX] = kernel[ker_pos];
+                int ker_pos = ker_start + ic * kernelSize * kernelSize + ker_y * kernelSize + ker_x;
+                ker_s[ic][ker_y][ker_x] = kernel[ker_pos];
             }
-        }
         __syncthreads(); //奇怪，这个同步不能去
         for (int ic = 0; ic < inputChannel; ic++)
         {
@@ -523,13 +517,13 @@ int main(int argc, char* argv[]) {
     cudaMalloc(&d_fc4_bias, fc4_bias.size() * sizeof(float));
     cudaMemcpy(d_fc4_weight, fc4_weight.data(), sizeof(float) * fc4_weight.size(), cudaMemcpyHostToDevice);
 
-    cudaMalloc(&d_input, 10000 * 28 * 28 * sizeof(float));
-    cudaMalloc(&d_predict, sizeof(int) * labels.size());
-    cudaMalloc(&d_labels, sizeof(int) * labels.size());
-    cudaMalloc(&d_conv1_weight, conv1_weight.size() * sizeof(float));
-    cudaMalloc(&d_conv1_bias, conv1_bias.size() * sizeof(float));
-    cudaMalloc(&d_conv2_weight, conv2_weight.size() * sizeof(float));
-    cudaMalloc(&d_conv2_bias, conv2_bias.size() * sizeof(float));
+    cudaMalloc(&d_input, 10000 * 28 * 28 * sizeof(float) * 2);
+    cudaMalloc(&d_predict, sizeof(int) * labels.size() * 2);
+    cudaMalloc(&d_labels, sizeof(int) * labels.size() * 2);
+    cudaMalloc(&d_conv1_weight, conv1_weight.size() * sizeof(float) * 2);
+    cudaMalloc(&d_conv1_bias, conv1_bias.size() * sizeof(float) * 2);
+    cudaMalloc(&d_conv2_weight, conv2_weight.size() * sizeof(float) * 2);
+    cudaMalloc(&d_conv2_bias, conv2_bias.size() * sizeof(float) * 2);
 
     // cudaMemcpy(d_input, images.data(), sizeof(float) * images.size(), cudaMemcpyHostToDevice);
 
@@ -580,7 +574,7 @@ int main(int argc, char* argv[]) {
     auto end = std::chrono::high_resolution_clock::now();
     cudaMemcpy(sum, d_sum, block_num * sizeof(int), cudaMemcpyDeviceToHost);
     std::chrono::duration<double> diff = end - start;
-    std::cout << std::fixed << std::setprecision(4) << diff.count() << ":" << std::setprecision(4) << (float)sum[0] / (float)10000 << std::endl;
+    std::cout << std::fixed << std::setprecision(6) << diff.count() << ":" << std::setprecision(4) << (float)sum[0] / (float)10000 << std::endl;
 
     // cudaMemcpy(predict, d_predict, sizeof(int) *labels.size(), cudaMemcpyDeviceToHost);
 
