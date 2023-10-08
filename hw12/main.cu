@@ -511,13 +511,12 @@ int main(int argc, char* argv[]) {
     float* d_conv1_weight, * d_conv1_bias, * d_conv2_weight, * d_conv2_bias;
     int* d_predict, * d_labels;
     int* predict = (int*)malloc(sizeof(int) * labels.size());
-    const int set_size = 10000 / 40;
-    int nStreams = 20;
+    const int set_size = 10000 / 1;
+    int nStreams = 1;
     cudaStream_t streams[nStreams];
     for (int i = 0; i < nStreams; i++) {
         cudaStreamCreate(&streams[i]);
     }
-
 
 
     cudaMalloc(&d_fc4_weight, fc4_weight.size() * sizeof(float));
@@ -543,28 +542,30 @@ int main(int argc, char* argv[]) {
         sizeof(float) * images.size(), cudaMemcpyHostToDevice);
 
     // int sum = 0;
-    
+
     int N = labels.size();
-            int THREAD_PER_BLOCK = 256;
-        int NUM_PER_BLOCK = 2 * 256;
-        // printf("N %d\n", N);
-        int block_num = (N + NUM_PER_BLOCK - 1) / NUM_PER_BLOCK;
-        int* d_sum, * sum = (int*)malloc(sizeof(int) * block_num);
+    int THREAD_PER_BLOCK = 256;
+    int NUM_PER_BLOCK = 2 * 256;
+    // printf("N %d\n", N);
+    int block_num = (N + NUM_PER_BLOCK - 1) / NUM_PER_BLOCK;
+    int* d_sum, * sum = (int*)malloc(sizeof(int) * block_num);
 
-        // printf("N %d. block_num %d\n", N, block_num);
-        cudaMalloc(&d_sum, block_num * sizeof(int));
+    // printf("N %d. block_num %d\n", N, block_num);
+    cudaMalloc(&d_sum, block_num * sizeof(int));
 
-        dim3 Grid(block_num, 1);
-        dim3 Block(THREAD_PER_BLOCK, 1);
-    
-        auto start = std::chrono::high_resolution_clock::now();
+    dim3 Grid(block_num, 1);
+    dim3 Block(THREAD_PER_BLOCK, 1);
+
+
+    auto start = std::chrono::high_resolution_clock::now();
     // 开始计时，使用chrono计时，不支持其它计时方式
-        for (int t = 0; t < 10000 / set_size; t++) {
-        int stream_tid = t % nStreams;
-        dim3 block(32, 32);
-        dim3 grid(set_size);
+    //--------------------------------开始执行--------------------------------
+    int t = 0;
+    int stream_tid = 0;
+    dim3 block(32, 32);
+    dim3 grid(set_size);
 
-        _lenet_fusion_new<set_size> << < grid, block, 400, streams[stream_tid] >> > (d_input,
+    _lenet_fusion_new<set_size> << < grid, block, 400, streams[stream_tid] >> > (d_input,
             d_conv1_weight,
             d_conv1_bias,
             d_conv2_weight,
@@ -574,17 +575,13 @@ int main(int argc, char* argv[]) {
             d_sum,
             t);
 
-        // cudaDeviceSynchronize();
-
-        // std::cout << "real: " << labels[t]<< ", predict : "<<  maxT(output5) << std::endl;
-    }
-
-    cudaMemcpy(sum, d_sum, block_num * sizeof(int), cudaMemcpyDeviceToHost);
+    cudaDeviceSynchronize();
+    //--------------------------------执行结束--------------------------------
     auto end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> diff = end - start;
-    std::cout << std::fixed << std::setprecision(10) << diff.count() << ":" << std::setprecision(10) << (float)sum[0]/ (float)10000 << std::endl;
-
     cudaMemcpy(sum, d_sum, block_num * sizeof(int), cudaMemcpyDeviceToHost);
+    std::chrono::duration<double> diff = end - start;
+    std::cout << std::fixed << std::setprecision(4) << diff.count() << ":" << std::setprecision(4) << (float)sum[0] / (float)10000 << std::endl;
+
     // cudaMemcpy(predict, d_predict, sizeof(int) *labels.size(), cudaMemcpyDeviceToHost);
 
     cudaFree(d_fc4_weight);
