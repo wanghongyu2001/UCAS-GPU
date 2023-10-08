@@ -239,21 +239,133 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
     inputChannel = 1, outputChannel = 6, inputSize = 28, kernelSize = 5;
 
 
-    __shared__ float in_s[6][32][32];
+    __shared__ float in_s[6][28][28];
     __shared__ float in_pool_s[28][28];
-    __shared__ float ker_s[16][6][6];
+    __shared__ float ker_s[16][5][5];
 
     __shared__ float output_pool[6][12][12];
     __shared__ float output_pool2[16 * 4 * 4];
 
     int outputSize = inputSize - kernelSize + 1;
-
-    int destY = threadIdx.y, destX = threadIdx.x;
+#if 1
+    int destY = threadIdx.x / 14, destX = threadIdx.x % 14;
     int srcY = destY, srcX = destX;
     for (int ic = 0; ic < inputChannel; ic++)
     {
-            int in_pos = ic * inputSize * inputSize + threadIdx.y * inputSize + threadIdx.x;
-            in_s[ic][destY][destX] = input[in_pos];        
+        //14 * 14 取 28 * 28 需要取 4 次数
+        if (destY < inputSize && destX < inputSize)
+        {
+            // 0 0
+            int in_pos = ic * inputSize * inputSize + (destY * 2) * inputSize + (destX * 2);
+            in_s[ic][(destY * 2)][destX * 2] = input[in_pos];
+            // 0 1
+                in_pos = ic * inputSize * inputSize + (destY * 2) * inputSize + (destX * 2 + 1);
+            in_s[ic][destY * 2][destX * 2 + 1] = input[in_pos];
+            // 1 0
+            in_pos = ic * inputSize * inputSize + (destY * 2 + 1) * inputSize + (destX * 2);
+            in_s[ic][destY * 2 + 1][destX * 2 ] = input[in_pos];
+            // 1 1
+            in_pos = ic * inputSize * inputSize + (destY * 2 + 1) * inputSize + (destX * 2 + 1);
+            in_s[ic][destY * 2 + 1][destX * 2 + 1] = input[in_pos];
+
+        }
+    }
+    // __syncthreads();
+    for (int oc = 0; oc < outputChannel; oc++)
+    {
+
+        float tmp_bias = kernel_bias[oc];
+        float accum = 0, accum1 = 0, accum2 = 0, accum3 = 0;
+        __syncthreads(); //奇怪，这个同步不能去
+        for (int ic = 0; ic < inputChannel; ic++)
+        {
+            if (destY < kernelSize && destX < kernelSize) // 5 不需要多取
+            {
+                int ker_pos = oc * kernelSize * kernelSize * inputChannel +
+                    ic * kernelSize * kernelSize + destY * kernelSize + destX;
+                ker_s[ic][destY][destX] = kernel[ker_pos];
+            }
+
+
+            __syncthreads();
+            //需要计算4次
+            // 计算 00 01 10 11
+            if (srcY < 12 && srcX  < 12)
+            {
+                for (int i = 0; i < kernelSize; i++)
+                {
+#pragma unroll
+                    for (int j = 0; j < kernelSize; j++)
+                    {
+                        //0 0
+                        accum += in_s[ic][srcY + i][srcX  + j] * ker_s[ic][i][j];
+                        //0 12
+                        accum1 += in_s[ic][srcY + i][srcX + 12  + j] * ker_s[ic][i][j];
+                        //12 0
+                        accum2 += in_s[ic][srcY + 12 + i][srcX + j] * ker_s[ic][i][j];
+                        // 12 12
+                        accum3 += in_s[ic][srcY + 12 + i][srcX + 12 + j] * ker_s[ic][i][j];
+                    }
+                }
+
+            }
+        }
+
+        __syncthreads();
+        // 00 outsize 24
+        if (destY < 12 && destX < 12)
+        {
+            // 00 
+            in_pool_s[destY ][destX ] = accum + tmp_bias;
+            // 01
+            in_pool_s[destY ][destX + 12] = accum1 + tmp_bias;
+            //10
+            in_pool_s[destY + 12][destX] = accum2 + tmp_bias;
+            // 11
+            in_pool_s[destY + 12][destX  + 12] = accum3 + tmp_bias;
+        }
+        // 01
+        // if (destY < outputSize && destX + 14 < outputSize)
+        //     in_pool_s[destY][destX + 14] = accum1 + tmp_bias;
+
+        // // 10
+        // if (destY + 14 < outputSize && destX < outputSize)
+        //     in_pool_s[destY + 14][destX] = accum2 + tmp_bias;
+        // // 10
+        // if (destY + 14 < outputSize && destX + 14 < outputSize)
+        //     in_pool_s[destY + 14][destX + 14] = accum3 + tmp_bias;
+
+
+        __syncthreads();
+
+#else
+        int output_pool_size = outputSize / 2;
+        int kernel_pool_size = 2;
+        if (srcY < output_pool_size && srcX < output_pool_size)
+        {
+            float tmp_max = 0;
+            for (int i = 0; i < kernel_pool_size; i++)
+#pragma unroll
+                for (int j = 0; j < kernel_pool_size; j++)
+                {
+
+                    tmp_max = max(tmp_max, in_pool_s[srcY * kernel_pool_size + i][srcX * kernel_pool_size + j]);
+                }
+            output_pool[oc][srcY][srcX] = tmp_max >= 0 ? tmp_max : 0;
+        }
+    }
+
+    int destY = threadIdx.x / 28, destX = threadIdx.x % 28;
+    int srcY = destY, srcX = destX;
+    for (int ic = 0; ic < inputChannel; ic++)
+    {
+
+        if (destY < inputSize && destX < inputSize)
+        {
+            int in_pos = ic * inputSize * inputSize + destY * inputSize + destX;
+            in_s[ic][destY][destX] = input[in_pos];
+
+        }
     }
     // __syncthreads();
     for (int oc = 0; oc < outputChannel; oc++)
@@ -261,14 +373,15 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
 
         float tmp_bias = kernel_bias[oc];
         float accum = 0;
-        int ker_start = oc * kernelSize * kernelSize * inputChannel;
-        int ker_y = threadIdx.x / 5, ker_x = threadIdx.x % 5;
-        if (threadIdx.y == 0)
         for (int ic = 0; ic < inputChannel; ic++)
+        {
+            if (destY < kernelSize && destX < kernelSize)
             {
-                int ker_pos = ker_start + ic * kernelSize * kernelSize + ker_y * kernelSize + ker_x;
-                ker_s[ic][ker_y][ker_x] = kernel[ker_pos];
+                int ker_pos = oc * kernelSize * kernelSize * inputChannel +
+                    ic * kernelSize * kernelSize + destY * kernelSize + destX;
+                ker_s[ic][destY][destX] = kernel[ker_pos];
             }
+        }
         __syncthreads(); //奇怪，这个同步不能去
         for (int ic = 0; ic < inputChannel; ic++)
         {
@@ -300,7 +413,7 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
             in_pool_s[destY][destX] = accum + tmp_bias;
 
         __syncthreads();
-
+#endif
 
         int output_pool_size = outputSize / 2;
         int kernel_pool_size = 2;
@@ -317,9 +430,10 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
             output_pool[oc][srcY][srcX] = tmp_max >= 0 ? tmp_max : 0;
         }
     }
+
     __syncthreads();
-    //-----------_conv2d_1<2> << < 1, block >> > (d_output_pool, d_output_pool2, d_kernel2, d_kernelBias2);-----------
-    //------------------------------------------------second--------------------------------------------------------------
+//-----------_conv2d_1<2> << < 1, block >> > (d_output_pool, d_output_pool2, d_kernel2, d_kernelBias2);-----------
+//------------------------------------------------second--------------------------------------------------------------
     inputChannel = 6, outputChannel = 16, inputSize = 12, kernelSize = 5;
     outputSize = inputSize - kernelSize + 1;
 
@@ -395,15 +509,18 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
     //                                                 GEMV
     //------------------------------------------------relu+gemv--------------------------------------------------------------
 
-    //一个warp算y的一个元素
+#if 0
+
+#else
     int height = 10, width = 256;
-    int warp_id = threadIdx.y;
-    int warp_num = blockDim.y;
+    int tid = threadIdx.x;
+    int warp_id = (tid) / 32;
+    int thread_warp_id = tid % 32;
+    int warp_num = (blockDim.x * blockDim.y) / 32;
     const int warp_size = 32;
 
     //warp要取的col的start
-    int col_vec_start = threadIdx.x;
-    int tid = threadIdx.x + threadIdx.y * blockDim.x;
+    int col_vec_start = thread_warp_id;
     // __shared__ Arow_s[width];  
     float* x_s = output_pool2;
     __shared__ float out[10];
@@ -423,7 +540,10 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
         tmp += current_val1.z * x_s[col_vec_start * 4 + 2];
         tmp += current_val1.w * x_s[col_vec_start * 4 + 3];
         tmp = warpReduceSum<warp_size>(tmp);
-        if (threadIdx.x == 0)
+        // if (t == 0 && row == 0 && warp_id == 0)
+        //     printf("warpid %d col_vec_start %d tmp %f\n", warp_id, col_vec_start, tmp);
+
+        if (tid % 32 == 0)
         {
             atomicAdd(&out[row], tmp);
         }
@@ -444,12 +564,15 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
         int acc = (id == flag);
         atomicAdd(sum, acc);
     }
+#endif
 }
 
 int main(int argc, char* argv[]) {
     std::string dir = argv[1];  // 第一个参数是程序所在的目录，这个目录是存放前一步训练模型参数文件的目录，从这个目录下读取模型参数文件，相对于这个目录读取测试集图片和标签
     // cout << dir;
+    int gpuDevice = 1; // 选择第二个 GPU，索引从0开始
 
+    cudaSetDevice(gpuDevice);
     // 读取测试集，对于想实现CUDA C/C++训练的同学，参考训练集文件名为train-images-idx3-ubyte和train-labels-idx1-ubyte
 #if 1
     auto images = read_mnist_images(dir + "/../../data/FashionMNIST/raw/t10k-images-idx3-ubyte");
@@ -517,13 +640,13 @@ int main(int argc, char* argv[]) {
     cudaMalloc(&d_fc4_bias, fc4_bias.size() * sizeof(float));
     cudaMemcpy(d_fc4_weight, fc4_weight.data(), sizeof(float) * fc4_weight.size(), cudaMemcpyHostToDevice);
 
-    cudaMalloc(&d_input, 10000 * 28 * 28 * sizeof(float) * 2);
-    cudaMalloc(&d_predict, sizeof(int) * labels.size() * 2);
-    cudaMalloc(&d_labels, sizeof(int) * labels.size() * 2);
-    cudaMalloc(&d_conv1_weight, conv1_weight.size() * sizeof(float) * 2);
-    cudaMalloc(&d_conv1_bias, conv1_bias.size() * sizeof(float) * 2);
-    cudaMalloc(&d_conv2_weight, conv2_weight.size() * sizeof(float) * 2);
-    cudaMalloc(&d_conv2_bias, conv2_bias.size() * sizeof(float) * 2);
+    cudaMalloc(&d_input, 10000 * 28 * 28 * sizeof(float));
+    cudaMalloc(&d_predict, sizeof(int) * labels.size());
+    cudaMalloc(&d_labels, sizeof(int) * labels.size());
+    cudaMalloc(&d_conv1_weight, conv1_weight.size() * sizeof(float));
+    cudaMalloc(&d_conv1_bias, conv1_bias.size() * sizeof(float));
+    cudaMalloc(&d_conv2_weight, conv2_weight.size() * sizeof(float));
+    cudaMalloc(&d_conv2_bias, conv2_bias.size() * sizeof(float));
 
     // cudaMemcpy(d_input, images.data(), sizeof(float) * images.size(), cudaMemcpyHostToDevice);
 
@@ -554,12 +677,12 @@ int main(int argc, char* argv[]) {
     auto start = std::chrono::high_resolution_clock::now();
     // 开始计时，使用chrono计时，不支持其它计时方式
     //--------------------------------开始执行--------------------------------
-    int t = 0;
-    int stream_tid = 0;
-    dim3 block(32, 32);
-    dim3 grid(set_size);
+    for (int t = 0; t < 10000 / set_size; t++) {
+        int stream_tid = t % nStreams;
+        dim3 block(28 * 28);
+        dim3 grid(set_size);
 
-    _lenet_fusion_new<set_size> << < grid, block, 400, streams[stream_tid] >> > (d_input,
+        _lenet_fusion_new<set_size> << < grid, block, 400, streams[stream_tid] >> > (d_input,
             d_conv1_weight,
             d_conv1_bias,
             d_conv2_weight,
@@ -569,12 +692,16 @@ int main(int argc, char* argv[]) {
             d_sum,
             t);
 
+
+        // std::cout << "real: " << labels[t]<< ", predict : "<<  maxT(output5) << std::endl;
+    }
+
     cudaDeviceSynchronize();
     //--------------------------------执行结束--------------------------------
     auto end = std::chrono::high_resolution_clock::now();
     cudaMemcpy(sum, d_sum, block_num * sizeof(int), cudaMemcpyDeviceToHost);
     std::chrono::duration<double> diff = end - start;
-    std::cout << std::fixed << std::setprecision(6) << diff.count() << ":" << std::setprecision(4) << (float)sum[0] / (float)10000 << std::endl;
+    std::cout << std::fixed << std::setprecision(4) << diff.count() << ":" << std::setprecision(4) << (float)sum[0] / (float)10000 << std::endl;
 
     // cudaMemcpy(predict, d_predict, sizeof(int) *labels.size(), cudaMemcpyDeviceToHost);
 
