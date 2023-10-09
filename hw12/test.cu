@@ -248,139 +248,29 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
 
     int outputSize = inputSize - kernelSize + 1;
 
-    int destY = threadIdx.x / 12, destX = threadIdx.x % 12;
+    int destY = threadIdx.x / 8, destX = threadIdx.x % 8;
     int srcY = destY, srcX = destX;
-    for (int ic = 0; ic < inputChannel; ic++)
+    for (int ic = 0; ic < 1; ic++)
     {
-        //14 * 14 取 28 * 28 需要取 4 次数
+        //8 * 8 取 28 * 28 需要取 16次数
         if (destY < inputSize && destX < inputSize)
         {
-            // 0 0
-            int in_pos = ic * inputSize * inputSize + (destY * 2) * inputSize + (destX * 2);
-            in_s[ic][(destY * 2)][destX * 2] = input[in_pos];
-            // 0 1
-            in_pos = ic * inputSize * inputSize + (destY * 2) * inputSize + (destX * 2 + 1);
-            in_s[ic][destY * 2][destX * 2 + 1] = input[in_pos];
-            // 1 0
-            in_pos = ic * inputSize * inputSize + (destY * 2 + 1) * inputSize + (destX * 2);
-            in_s[ic][destY * 2 + 1][destX * 2] = input[in_pos];
-            // 1 1
-            in_pos = ic * inputSize * inputSize + (destY * 2 + 1) * inputSize + (destX * 2 + 1);
-            in_s[ic][destY * 2 + 1][destX * 2 + 1] = input[in_pos];
-            // if (destX == 11 && destY == 11 && t == 0)
-            //     printf("in_s[%d][%d] = %f\n", 22, 22, in_s[0][destY * 2][destX * 2])
-                //取16个数
-            if (destX == 11 && destY == 11)
-            {
-                // 2 2
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 2) * inputSize + (destX * 2 + 2);
-                in_s[ic][(destY * 2 + 2)][destX * 2 + 2] = input[in_pos];
-                // 2 3
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 2) * inputSize + (destX * 2 + 3);
-                in_s[ic][destY * 2 + 2][destX * 2 + 3] = input[in_pos];
-                // 3 2
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 3) * inputSize + (destX * 2 + 2);
-                in_s[ic][destY * 2 + 3][destX * 2 + 2] = input[in_pos];
-                // 3 3
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 3) * inputSize + (destX * 2 + 3);
-                in_s[ic][destY * 2 + 3][destX * 2 + 3] = input[in_pos];
-                // 2 4
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 2) * inputSize + (destX * 2 + 4);
-                in_s[ic][(destY * 2) + 2][destX * 2 + 4] = input[in_pos];
-                // 2 5
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 2) * inputSize + (destX * 2 + 5);
-                in_s[ic][destY * 2 + 2][destX * 2 + 5] = input[in_pos];
-                // 3 4
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 3) * inputSize + (destX * 2 + 4);
-                in_s[ic][destY * 2 + 3][destX * 2 + 4] = input[in_pos];
-                // 3 5
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 3) * inputSize + (destX * 2 + 5);
-                in_s[ic][destY * 2 + 3][destX * 2 + 5] = input[in_pos];
-                // 4 2
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 4) * inputSize + (destX * 2 + 2);
-                in_s[ic][(destY * 2) + 4][destX * 2 + 2] = input[in_pos];
-                // 4 3
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 4) * inputSize + (destX * 2 + 3);
-                in_s[ic][destY * 2 + 4][destX * 2 + 3] = input[in_pos];
-                // 5 2
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 5) * inputSize + (destX * 2 + 2);
-                in_s[ic][destY * 2 + 5][destX * 2 + 2] = input[in_pos];
-                // 5 3
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 5) * inputSize + (destX * 2 + 3);
-                in_s[ic][destY * 2 + 5][destX * 2 + 3] = input[in_pos];
-                // 4 4
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 4) * inputSize + (destX * 2 + 4);
-                in_s[ic][(destY * 2) + 4][destX * 2 + 4] = input[in_pos];
-                // 4 5
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 4) * inputSize + (destX * 2 + 5);
-                in_s[ic][destY * 2 + 4][destX * 2 + 5] = input[in_pos];
-                // 5 4
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 5) * inputSize + (destX * 2 + 4);
-                in_s[ic][destY * 2 + 5][destX * 2 + 4] = input[in_pos];
-                // 5 5
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 5) * inputSize + (destX * 2 + 5);
-                in_s[ic][destY * 2 + 5][destX * 2 + 5] = input[in_pos];
 
-            }
-            if (destX == 11)
-            {
-                // 0 2
-                in_pos = ic * inputSize * inputSize + (destY * 2) * inputSize + (destX * 2 + 2);
-                in_s[ic][(destY * 2)][destX * 2 + 2] = input[in_pos];
-                // 0 3
-                in_pos = ic * inputSize * inputSize + (destY * 2) * inputSize + (destX * 2 + 3);
-                in_s[ic][destY * 2][destX * 2 + 3] = input[in_pos];
-                // 1 2
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 1) * inputSize + (destX * 2 + 2);
-                in_s[ic][destY * 2 + 1][destX * 2 + 2] = input[in_pos];
-                // 1 3
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 1) * inputSize + (destX * 2 + 3);
-                in_s[ic][destY * 2 + 1][destX * 2 + 3] = input[in_pos];
-                // 0 4
-                in_pos = ic * inputSize * inputSize + (destY * 2) * inputSize + (destX * 2 + 4);
-                in_s[ic][(destY * 2)][destX * 2 + 4] = input[in_pos];
-                // 0 5
-                in_pos = ic * inputSize * inputSize + (destY * 2) * inputSize + (destX * 2 + 5);
-                in_s[ic][destY * 2][destX * 2 + 5] = input[in_pos];
-                // 1 4
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 1) * inputSize + (destX * 2 + 4);
-                in_s[ic][destY * 2 + 1][destX * 2 + 4] = input[in_pos];
-                // 1 5
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 1) * inputSize + (destX * 2 + 5);
-                in_s[ic][destY * 2 + 1][destX * 2 + 5] = input[in_pos];
+            for (int i = 0; i < 4; i++)
+                for (int j = 0; j < 4; j++)
+                {
 
-            }
-            if (destY == 11)
-            {
-                // 2 0
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 2) * inputSize + (destX * 2);
-                in_s[ic][(destY * 2) + 2][destX * 2] = input[in_pos];
-                // 2 1
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 2) * inputSize + (destX * 2 + 1);
-                in_s[ic][destY * 2 + 2][destX * 2 + 1] = input[in_pos];
-                // 3 0
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 3) * inputSize + (destX * 2);
-                in_s[ic][destY * 2 + 3][destX * 2] = input[in_pos];
-                // 3 1
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 3) * inputSize + (destX * 2 + 1);
-                in_s[ic][destY * 2 + 3][destX * 2 + 1] = input[in_pos];
-                // 4 0
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 4) * inputSize + (destX * 2);
-                in_s[ic][(destY * 2) + 4][destX * 2] = input[in_pos];
-                // 4 1
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 4) * inputSize + (destX * 2 + 1);
-                in_s[ic][destY * 2 + 4][destX * 2 + 1] = input[in_pos];
-                // 5 0
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 5) * inputSize + (destX * 2);
-                in_s[ic][destY * 2 + 5][destX * 2] = input[in_pos];
-                // 5 1
-                in_pos = ic * inputSize * inputSize + (destY * 2 + 5) * inputSize + (destX * 2 + 1);
-                in_s[ic][destY * 2 + 5][destX * 2 + 1] = input[in_pos];
 
-            }
+                    int in_pos = ic * inputSize * inputSize + (destY * 4 + i) * inputSize + (destX * 4 + j);
+                    in_s[ic][(destY * 4 + i)][destX * 4 + j] = input[in_pos];
+                }
+
+
+
+            
         }
     }
-    __syncthreads();
+    // __syncthreads();
     // if (t == 0 && threadIdx.x == 0)
     // {
     //     printf("------------------------input 256------------------------:\n");
@@ -395,8 +285,9 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
     {
 
         float tmp_bias = kernel_bias[oc];
-        float accum = 0, accum1 = 0, accum2 = 0, accum3 = 0;
-        __syncthreads(); //奇怪，这个同步不能去
+        float accum[16];
+        for (int i = 0; i < 16; i++) accum[i] = 0;
+        // __syncthreads(); //奇怪，这个同步不能去
         for (int ic = 0; ic < inputChannel; ic++)
         {
             if (destY < kernelSize && destX < kernelSize) // 5 不需要多取
@@ -408,73 +299,88 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
 
 
             __syncthreads();
-            //需要计算4次
+            //需要计算16次
             // 计算 00 01 10 11
-            if (srcY < 12 && srcX < 12)
+            if (srcY < 6 && srcX < 6)
             {
+                
                 for (int i = 0; i < kernelSize; i++)
                 {
-#pragma unroll
+
                     for (int j = 0; j < kernelSize; j++)
                     {
-                        //0 0
-                        accum += in_s[ic][srcY + i][srcX + j] * ker_s[ic][i][j];
-                        //0 12
-                        accum1 += in_s[ic][srcY + i][srcX + 12 + j] * ker_s[ic][i][j];
-                        //12 0
-                        accum2 += in_s[ic][srcY + 12 + i][srcX + j] * ker_s[ic][i][j];
-                        // 12 12
-                        accum3 += in_s[ic][srcY + 12 + i][srcX + 12 + j] * ker_s[ic][i][j];
+                        float ker_tmp = ker_s[ic][i][j];
+#pragma unroll  
+                        for (int k = 0; k < 4; k++)
+                        {
+                            for (int m = 0; m < 4; m ++ )
+                                accum[k * 4 + m] += in_s[ic][srcY * 4 + i + k][srcX * 4 + j + m] * ker_tmp;
+                        }
+                            //0 0
+                        // accum += in_s[ic][srcY + i][srcX + j] * ker_s[ic][i][j];
+                        // //0 12
+                        // accum1 += in_s[ic][srcY + i][srcX + 12 + j] * ker_s[ic][i][j];
+                        // //12 0
+                        // accum2 += in_s[ic][srcY + 12 + i][srcX + j] * ker_s[ic][i][j];
+                        // // 12 12
+                        // accum3 += in_s[ic][srcY + 12 + i][srcX + 12 + j] * ker_s[ic][i][j];
                     }
                 }
 
             }
         }
 
-        __syncthreads();
+        // __syncthreads();
         // 00 outsize 24
-        if (destY < 12 && destX < 12)
+        if (destY < 6 && destX < 6)
         {
-            // 00 
-            in_pool_s[destY][destX] = accum + tmp_bias;
-            // 01
-            in_pool_s[destY][destX + 12] = accum1 + tmp_bias;
-            //10
-            in_pool_s[destY + 12][destX] = accum2 + tmp_bias;
-            // 11
-            in_pool_s[destY + 12][destX + 12] = accum3 + tmp_bias;
+            for (int i = 0; i < 4; i++)
+                for (int j = 0; j < 4; j++)
+                    in_pool_s[destY * 4 + i][destX * 4 + j] = accum[i * 4 + j] + tmp_bias;
+                    // 00 
+            // in_pool_s[destY][destX] = accum + tmp_bias;
+            // // 01
+            // in_pool_s[destY][destX + 12] = accum1 + tmp_bias;
+            // //10
+            // in_pool_s[destY + 12][destX] = accum2 + tmp_bias;
+            // // 11
+            // in_pool_s[destY + 12][destX + 12] = accum3 + tmp_bias;
         }
-        // 01
-        // if (destY < outputSize && destX + 14 < outputSize)
-        //     in_pool_s[destY][destX + 14] = accum1 + tmp_bias;
-
-        // // 10
-        // if (destY + 14 < outputSize && destX < outputSize)
-        //     in_pool_s[destY + 14][destX] = accum2 + tmp_bias;
-        // // 10
-        // if (destY + 14 < outputSize && destX + 14 < outputSize)
-        //     in_pool_s[destY + 14][destX + 14] = accum3 + tmp_bias;
-
 
         __syncthreads();
-
+        // if (t == 0 && threadIdx.x == 0)
+        // {
+        //     for (int i = 0; i < 24; i ++ )
+        //         for (int j = 0; j < 24; j ++ )
+        //             printf("in_pool_s[%d][%d] = %f\n",i, j, in_pool_s[i][j] );
+        // }
         int output_pool_size = outputSize / 2;
         int kernel_pool_size = 2;
-        if (srcY < output_pool_size && srcX < output_pool_size)
+        if (srcY < 6 && srcX < 6)
         {
-            float tmp_max = 0;
+            float tmp_max[4] = {0, 0, 0, 0};
             for (int i = 0; i < kernel_pool_size; i++)
 #pragma unroll
                 for (int j = 0; j < kernel_pool_size; j++)
                 {
-
-                    tmp_max = max(tmp_max, in_pool_s[srcY * kernel_pool_size + i][srcX * kernel_pool_size + j]);
-                }
-            output_pool[oc][srcY][srcX] = tmp_max >= 0 ? tmp_max : 0;
+                    for (int k = 0; k < 2; k ++ )
+                        for (int m = 0; m < 2; m ++ )
+                        tmp_max[k * 2 + m] = max(tmp_max[k * 2 + m], 
+                        in_pool_s[srcY * 4 + k * 2 + i][srcX * 4 + m * 2 + j]);
+               }
+            output_pool[oc][srcY * 2][srcX * 2] = tmp_max[0] >= 0 ? tmp_max[0] : 0;
+            output_pool[oc][srcY * 2][srcX * 2 + 1] = tmp_max[1] >= 0 ? tmp_max[1] : 0;
+            output_pool[oc][srcY * 2 + 1][srcX * 2] = tmp_max[2] >= 0 ? tmp_max[2] : 0;
+            output_pool[oc][srcY * 2 + 1][srcX * 2 + 1] = tmp_max[3] >= 0 ? tmp_max[3] : 0;
         }
     }
-
-    __syncthreads();
+        // if (t == 0 && threadIdx.x == 0)
+        // {
+        //     for (int i = 0; i < 12; i ++ )
+        //         for (int j = 0; j < 12; j ++ )
+        //             printf("out_pool_s[%d][%d] = %f\n",i, j, output_pool[0][i][j] );
+        // }
+    // __syncthreads();
     //-----------_conv2d_1<2> << < 1, block >> > (d_output_pool, d_output_pool2, d_kernel2, d_kernelBias2);-----------
     //------------------------------------------------second--------------------------------------------------------------
     inputChannel = 6, outputChannel = 16, inputSize = 12, kernelSize = 5;
@@ -544,7 +450,7 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
             }
         }
     }
-    __syncthreads();
+    // __syncthreads();
 
     // clock_t end_conv_time = clock();
     // clock_t start_fc_time = clock();
@@ -573,74 +479,26 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
 
 
     // if (t == 0 && tid == 0) printf("warnum %d\n", warp_num);
-
+    for (int i = 0; i < 5; i ++ )
     {
         float tmp = 0;
-        int row = warp_id;
-        if (tid % 32 == 0)
-            out[row] = 0;
+        int row = warp_id + warp_num * i;
 
         float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start];
+        float4 current_val2 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start + 32];
+
         tmp += current_val1.x * x_s[col_vec_start * 4];
         tmp += current_val1.y * x_s[col_vec_start * 4 + 1];
         tmp += current_val1.z * x_s[col_vec_start * 4 + 2];
         tmp += current_val1.w * x_s[col_vec_start * 4 + 3];
-        current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start + 32];
-        tmp += current_val1.x * x_s[(col_vec_start + 32) * 4];
-        tmp += current_val1.y * x_s[(col_vec_start + 32) * 4 + 1];
-        tmp += current_val1.z * x_s[(col_vec_start + 32) * 4 + 2];
-        tmp += current_val1.w * x_s[(col_vec_start + 32) * 4 + 3];
+        tmp += current_val2.x * x_s[(col_vec_start + 32) * 4];
+        tmp += current_val2.y * x_s[(col_vec_start + 32) * 4 + 1];
+        tmp += current_val2.z * x_s[(col_vec_start + 32) * 4 + 2];
+        tmp += current_val2.w * x_s[(col_vec_start + 32) * 4 + 3];
         tmp = warpReduceSum<warp_size>(tmp);
         if (tid % 32 == 0)
         {
-            atomicAdd(&out[row], tmp);
-        }
-    }
-
-  
-    {
-        float tmp1 = 0;
-        int row1 = warp_id + warp_num;
-        if (tid % 32 == 0)
-            out[row1] = 0;
-
-        float4 current_val1 = reinterpret_cast<float4*>(A)[row1 * width / 4 + col_vec_start];
-        tmp1 += current_val1.x * x_s[col_vec_start * 4];
-        tmp1 += current_val1.y * x_s[col_vec_start * 4 + 1];
-        tmp1 += current_val1.z * x_s[col_vec_start * 4 + 2];
-        tmp1 += current_val1.w * x_s[col_vec_start * 4 + 3];
-        current_val1 = reinterpret_cast<float4*>(A)[row1 * width / 4 + col_vec_start + 32];
-        tmp1 += current_val1.x * x_s[(col_vec_start + 32) * 4];
-        tmp1 += current_val1.y * x_s[(col_vec_start + 32) * 4 + 1];
-        tmp1 += current_val1.z * x_s[(col_vec_start + 32) * 4 + 2];
-        tmp1 += current_val1.w * x_s[(col_vec_start + 32) * 4 + 3];
-        tmp1 = warpReduceSum<warp_size>(tmp1);
-        if (tid % 32 == 0)
-        {
-            atomicAdd(&out[row1], tmp1);
-        }
-    }
-    if (warp_id < 2)
-    {
-        float tmp1 = 0;
-        int row1 = warp_id + warp_num *2;
-        if (tid % 32 == 0)
-            out[row1] = 0;
-
-        float4 current_val1 = reinterpret_cast<float4*>(A)[row1 * width / 4 + col_vec_start];
-        tmp1 += current_val1.x * x_s[col_vec_start * 4];
-        tmp1 += current_val1.y * x_s[col_vec_start * 4 + 1];
-        tmp1 += current_val1.z * x_s[col_vec_start * 4 + 2];
-        tmp1 += current_val1.w * x_s[col_vec_start * 4 + 3];
-        current_val1 = reinterpret_cast<float4*>(A)[row1 * width / 4 + col_vec_start + 32];
-        tmp1 += current_val1.x * x_s[(col_vec_start + 32) * 4];
-        tmp1 += current_val1.y * x_s[(col_vec_start + 32) * 4 + 1];
-        tmp1 += current_val1.z * x_s[(col_vec_start + 32) * 4 + 2];
-        tmp1 += current_val1.w * x_s[(col_vec_start + 32) * 4 + 3];
-        tmp1 = warpReduceSum<warp_size>(tmp1);
-        if (tid % 32 == 0)
-        {
-            atomicAdd(&out[row1], tmp1);
+            out[row] = tmp;
         }
     }
 
@@ -651,7 +509,8 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
         // if (t == 5000)
             // for (int i = 0; i < 10; i++)
             //     printf("row %d tmp %f\n", i, out[i]);
-        float tmp_max = -1e9, id = 0;
+        float tmp_max = -1e9;
+        int    id = 0;
         for (int i = 0; i < 10; i++)
         {
             if (tmp_max < out[i])
@@ -778,7 +637,7 @@ int main(int argc, char* argv[]) {
     for (int t = 0; t < 10000 / set_size; t++) {
         int stream_tid = t % nStreams;
         // dim3 block(7 * 32);
-        dim3 block(12 * 12);
+        dim3 block(8 * 8);
         dim3 grid(set_size);
 
         _lenet_fusion_new<set_size> << < grid, block, 400, streams[stream_tid] >> > (d_input,
