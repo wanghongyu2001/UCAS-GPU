@@ -223,17 +223,14 @@ __device__ void print_d(float* y, int len)
         printf("%f\n", y[i]);
 }
 
-
-
 template<int set_size>
 __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel,
-        const float* __restrict__ kernel_bias, const float* __restrict__ kernel2,
-        const float* __restrict__ kernel_bias2,
-        float* __restrict__ A,
-        int* labels, int* sum,
-        int set_id) //是方形
-    {
-#if 1
+    const float* __restrict__ kernel_bias, const float* __restrict__ kernel2,
+    const float* __restrict__ kernel_bias2,
+    float* __restrict__ A,
+    int* labels, int* sum,
+    int set_id) //是方形
+{
     int t = set_id * set_size + blockIdx.x;
     int flag = labels[t];
     // clock_t start_conv_time = clock();
@@ -341,439 +338,100 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
 
         __syncthreads();
 
-
-
-    int output_pool_size = outputSize / 2;
-    int kernel_pool_size = 2;
-    if (srcY < output_pool_size && srcX < output_pool_size)
-    {
-        float tmp_max = 0;
-        for (int i = 0; i < kernel_pool_size; i++)
-#pragma unroll
-            for (int j = 0; j < kernel_pool_size; j++)
-            {
-
-                tmp_max = max(tmp_max, in_pool_s[srcY * kernel_pool_size + i][srcX * kernel_pool_size + j]);
-            }
-        output_pool[oc][srcY][srcX] = tmp_max >= 0 ? tmp_max : 0;
-    }
-}
-
-__syncthreads();
-//-----------_conv2d_1<2> << < 1, block >> > (d_output_pool, d_output_pool2, d_kernel2, d_kernelBias2);-----------
-//------------------------------------------------second--------------------------------------------------------------
-inputChannel = 6, outputChannel = 16, inputSize = 12, kernelSize = 5;
-outputSize = inputSize - kernelSize + 1;
-
-
-for (int oc = 0; oc < outputChannel; oc++)
-{
-
-    float tmp_bias = kernel_bias2[oc];
-    float accum = 0;
-    for (int ic = 0; ic < inputChannel; ic++)
-    {
-        if (destY < kernelSize && destX < kernelSize)
+        int output_pool_size = outputSize / 2;
+        int kernel_pool_size = 2;
+        if (srcY < output_pool_size && srcX < output_pool_size)
         {
-            int ker_pos = oc * kernelSize * kernelSize * inputChannel +
-                ic * kernelSize * kernelSize + destY * kernelSize + destX;
-            ker_s[ic][destY][destX] = kernel2[ker_pos];
-        }
-    }
-    __syncthreads(); //奇怪，这个同步不能去
-    for (int ic = 0; ic < inputChannel; ic++)
-    {
-        if (srcY + kernelSize - 1 < inputSize && srcX + kernelSize - 1 < inputSize)
-        {
-            for (int i = 0; i < kernelSize; i++)
-            {
+            float tmp_max = 0;
+            for (int i = 0; i < kernel_pool_size; i++)
 #pragma unroll
-                for (int j = 0; j < kernelSize; j++)
+                for (int j = 0; j < kernel_pool_size; j++)
                 {
-                    accum += output_pool[ic][srcY + i][srcX + j] * ker_s[ic][i][j];
-                }
-            }
 
+                    tmp_max = max(tmp_max, in_pool_s[srcY * kernel_pool_size + i][srcX * kernel_pool_size + j]);
+                }
+            output_pool[oc][srcY][srcX] = tmp_max >= 0 ? tmp_max : 0;
         }
     }
-
-
-
-    if (destY < outputSize && destX < outputSize)
-        in_pool_s[destY][destX] = accum + tmp_bias;
 
     __syncthreads();
+    //-----------_conv2d_1<2> << < 1, block >> > (d_output_pool, d_output_pool2, d_kernel2, d_kernelBias2);-----------
+    //------------------------------------------------second--------------------------------------------------------------
+    inputChannel = 6, outputChannel = 16, inputSize = 12, kernelSize = 5;
+    outputSize = inputSize - kernelSize + 1;
 
-    int output_pool_size = outputSize / 2;
-    int kernel_pool_size = 2;
-    // 4 * 4 * 16
-    if (srcY < output_pool_size && srcX < output_pool_size)
+
+    for (int oc = 0; oc < outputChannel; oc++)
     {
-        float tmp_max = 0;
-        for (int i = 0; i < kernel_pool_size; i++)
-#pragma unroll
-            for (int j = 0; j < kernel_pool_size; j++)
-            {
 
-                tmp_max = max(tmp_max, in_pool_s[srcY * kernel_pool_size + i][srcX * kernel_pool_size + j]);
-            }
-        int out_pos = oc * output_pool_size * output_pool_size + srcY * output_pool_size + srcX;
-        if (tmp_max >= 0)
-        {
-
-            output_pool2[out_pos] = tmp_max;
-        }
-        else
-        {
-            output_pool2[out_pos] = 0;
-        }
-    }
-}
-__syncthreads();
-
-// clock_t end_conv_time = clock();
-// clock_t start_fc_time = clock();
-//------------------------------------------------relu+gemv--------------------------------------------------------------
-//                                                 GEMV
-//------------------------------------------------relu+gemv--------------------------------------------------------------
-
-
-
-int height = 10, width = 256;
-int tid = threadIdx.x;
-int warp_id = (tid) / 32;
-int thread_warp_id = tid % 32;
-int warp_num = (blockDim.x * blockDim.y) / 32;
-const int warp_size = 32;
-
-//warp要取的col的start
-int col_vec_start = thread_warp_id;
-// __shared__ Arow_s[width];  
-float* x_s = output_pool2;
-__shared__ float out[10];
-
-
-
-
-#pragma unroll
-for (int row = warp_id / 2; row < height; row += warp_num)
-{
-    out[row] = 0;
-    float tmp = 0;
-    col_vec_start += warp_id % 2 * 32;
-    float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start];
-    tmp += current_val1.x * x_s[col_vec_start * 4];
-    tmp += current_val1.y * x_s[col_vec_start * 4 + 1];
-    tmp += current_val1.z * x_s[col_vec_start * 4 + 2];
-    tmp += current_val1.w * x_s[col_vec_start * 4 + 3];
-
-    tmp = warpReduceSum<warp_size>(tmp);
-    // if (t == 0 && row == 0 && warp_id == 0)
-    //     printf("warpid %d col_vec_start %d tmp %f\n", warp_id, col_vec_start, tmp);
-
-    if (tid % 32 == 0)
-    {
-        atomicAdd(&out[row], tmp);
-    }
-
-}
-#else
-int height = 10, width = 256;
-int tid = threadIdx.x;
-int warp_id = (tid) / 32;
-int thread_warp_id = tid % 32;
-int warp_num = (blockDim.x * blockDim.y) / 32;
-const int warp_size = 32;
-
-//warp要取的col的start
-int col_vec_start = thread_warp_id;
-// __shared__ Arow_s[width];  
-float* x_s = output_pool2;
-__shared__ float out[10];
-
-
-
-
-#pragma unroll
-for (int row = warp_id / 2; row < height; row += warp_num)
-{
-    out[row] = 0;
-    float tmp = 0;
-    col_vec_start += warp_id % 2 * 32;
-    float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start];
-    tmp += current_val1.x * x_s[col_vec_start * 4];
-    tmp += current_val1.y * x_s[col_vec_start * 4 + 1];
-    tmp += current_val1.z * x_s[col_vec_start * 4 + 2];
-    tmp += current_val1.w * x_s[col_vec_start * 4 + 3];
-    tmp = warpReduceSum<warp_size>(tmp);
-    // if (t == 0 && row == 0 && warp_id == 0)
-    //     printf("warpid %d col_vec_start %d tmp %f\n", warp_id, col_vec_start, tmp);
-
-    if (tid % 32 == 0)
-    {
-        atomicAdd(&out[row], tmp);
-    }
-
-}
-
-    int t = blockIdx.x;
-    int flag = labels[t];
-        labels[0] = 0;
-        // clock_t start_conv_time = clock();
-        input = &input[(t) * 28 * 28];
-        int inputChannel, outputChannel, inputSize, kernelSize;
-        inputChannel = 1, outputChannel = 6, inputSize = 28, kernelSize = 5;
-
-
-        __shared__ float in_s[6][28][28];
-        __shared__ float in_pool_s[28][28];
-        __shared__ float ker_s[16][5][5];
-
-        __shared__ float output_pool[6][12][12];
-        __shared__ float output_pool2[16 * 4 * 4];
-
-        int outputSize = inputSize - kernelSize + 1;
-
-        int destY = threadIdx.x / 14, destX = threadIdx.x % 14;
-        // if (t == 0)
-        //     printf("destY %d destX %d\n", destY, destX);
-
-        int srcY = destY, srcX = destX;
+        float tmp_bias = kernel_bias2[oc];
+        float accum = 0;
         for (int ic = 0; ic < inputChannel; ic++)
         {
-            //14 * 14 取 28 * 28 需要取 4 次数
-            if (destX < 14 && destY < 14)
+            if (destY < kernelSize && destX < kernelSize)
             {
-                // 0 0
-                int start = ic * inputSize * inputSize;
-                int in_pos = start + (destY)*inputSize + (destX);
-                in_s[ic][destY][destX] = input[in_pos];
-                // 0 14
-                in_pos = start + (destY)*inputSize + (destX + 14);
-                in_s[ic][destY][destX + 14] = input[in_pos];
-                // 1 0
-                in_pos = start + (destY + 14) * inputSize + (destX);
-                in_s[ic][destY + 14][destX] = input[in_pos];
-                // 1 1
-                in_pos = start + (destY + 14) * inputSize + (destX + 14);
-                in_s[ic][destY + 14][destX + 14] = input[in_pos];
-
+                int ker_pos = oc * kernelSize * kernelSize * inputChannel +
+                    ic * kernelSize * kernelSize + destY * kernelSize + destX;
+                ker_s[ic][destY][destX] = kernel2[ker_pos];
             }
         }
-        // __syncthreads();
-        for (int oc = 0; oc < outputChannel; oc++)
+        __syncthreads(); //奇怪，这个同步不能去
+        for (int ic = 0; ic < inputChannel; ic++)
         {
-
-            float tmp_bias = kernel_bias[oc];
-            float accum = 0, accum1 = 0, accum2 = 0, accum3 = 0;
-            __syncthreads(); //奇怪，这个同步不能去
-            for (int ic = 0; ic < inputChannel; ic++)
+            if (srcY + kernelSize - 1 < inputSize && srcX + kernelSize - 1 < inputSize)
             {
-                if (destY < kernelSize && destX < kernelSize && destX < 14 && destY < 14) // 5 不需要多取
+                for (int i = 0; i < kernelSize; i++)
                 {
-                    int ker_pos = oc * kernelSize * kernelSize * inputChannel +
-                        ic * kernelSize * kernelSize + destY * kernelSize + destX;
-                    ker_s[ic][destY][destX] = kernel[ker_pos];
+#pragma unroll
+                    for (int j = 0; j < kernelSize; j++)
+                    {
+                        accum += output_pool[ic][srcY + i][srcX + j] * ker_s[ic][i][j];
+                    }
                 }
 
-
-                __syncthreads();
-                //需要计算4次
-                // 计算 00 01 10 11
-                if (srcY < 12 && srcX < 12)
-                {
-                    for (int i = 0; i < kernelSize; i++)
-                    {
-#pragma unroll
-                        for (int j = 0; j < kernelSize; j++)
-                        {
-                            //0 0
-                            accum += in_s[ic][srcY + i][srcX + j] * ker_s[ic][i][j];
-                            //0 12
-                            accum1 += in_s[ic][srcY + i][srcX + 12 + j] * ker_s[ic][i][j];
-                            //12 0
-                            accum2 += in_s[ic][srcY + 12 + i][srcX + j] * ker_s[ic][i][j];
-                            // 12 12
-                            accum3 += in_s[ic][srcY + 12 + i][srcX + 12 + j] * ker_s[ic][i][j];
-                        }
-                    }
-
-                }
-            }
-
-            __syncthreads();
-            // 00 outsize 24
-            if (destY < 12 && destX < 12)
-            {
-                // 00 
-                in_pool_s[destY][destX] = accum + tmp_bias;
-                // 01
-                in_pool_s[destY][destX + 12] = accum1 + tmp_bias;
-                //10
-                in_pool_s[destY + 12][destX] = accum2 + tmp_bias;
-                // 11
-                in_pool_s[destY + 12][destX + 12] = accum3 + tmp_bias;
-            }
-
-            __syncthreads();
-
-
-
-            int output_pool_size = outputSize / 2;
-            int kernel_pool_size = 2;
-            if (srcY < output_pool_size && srcX < output_pool_size)
-            {
-                float tmp_max = 0;
-                for (int i = 0; i < kernel_pool_size; i++)
-#pragma unroll
-                    for (int j = 0; j < kernel_pool_size; j++)
-                    {
-
-                        tmp_max = max(tmp_max, in_pool_s[srcY * kernel_pool_size + i][srcX * kernel_pool_size + j]);
-                    }
-                output_pool[oc][srcY][srcX] = tmp_max >= 0 ? tmp_max : 0;
             }
         }
+
+
+
+        if (destY < outputSize && destX < outputSize)
+            in_pool_s[destY][destX] = accum + tmp_bias;
 
         __syncthreads();
-        //-----------_conv2d_1<2> << < 1, block >> > (d_output_pool, d_output_pool2, d_kernel2, d_kernelBias2);-----------
-        //------------------------------------------------second--------------------------------------------------------------
-        inputChannel = 6, outputChannel = 16, inputSize = 12, kernelSize = 5;
-        outputSize = inputSize - kernelSize + 1;
 
-
-        for (int oc = 0; oc < outputChannel; oc++)
+        int output_pool_size = outputSize / 2;
+        int kernel_pool_size = 2;
+        // 4 * 4 * 16
+        if (srcY < output_pool_size && srcX < output_pool_size)
         {
-
-            float tmp_bias = kernel_bias2[oc];
-            float accum = 0;
-            for (int ic = 0; ic < inputChannel; ic++)
-            {
-                if (destY < kernelSize && destX < kernelSize)
-                {
-                    int ker_pos = oc * kernelSize * kernelSize * inputChannel +
-                        ic * kernelSize * kernelSize + destY * kernelSize + destX;
-                    ker_s[ic][destY][destX] = kernel2[ker_pos];
-                }
-            }
-            __syncthreads(); //奇怪，这个同步不能去
-            for (int ic = 0; ic < inputChannel; ic++)
-            {
-                if (srcY + kernelSize - 1 < inputSize && srcX + kernelSize - 1 < inputSize)
-                {
-                    for (int i = 0; i < kernelSize; i++)
-                    {
+            float tmp_max = 0;
+            for (int i = 0; i < kernel_pool_size; i++)
 #pragma unroll
-                        for (int j = 0; j < kernelSize; j++)
-                        {
-                            accum += output_pool[ic][srcY + i][srcX + j] * ker_s[ic][i][j];
-                        }
-                    }
+                for (int j = 0; j < kernel_pool_size; j++)
+                {
 
+                    tmp_max = max(tmp_max, in_pool_s[srcY * kernel_pool_size + i][srcX * kernel_pool_size + j]);
                 }
-            }
-
-
-
-            if (destY < outputSize && destX < outputSize)
-                in_pool_s[destY][destX] = accum + tmp_bias;
-
-            __syncthreads();
-
-            int output_pool_size = outputSize / 2;
-            int kernel_pool_size = 2;
-            // 4 * 4 * 16
-            if (srcY < output_pool_size && srcX < output_pool_size)
+            int out_pos = oc * output_pool_size * output_pool_size + srcY * output_pool_size + srcX;
+            if (tmp_max >= 0)
             {
-                float tmp_max = 0;
-                for (int i = 0; i < kernel_pool_size; i++)
-#pragma unroll
-                    for (int j = 0; j < kernel_pool_size; j++)
-                    {
 
-                        tmp_max = max(tmp_max, in_pool_s[srcY * kernel_pool_size + i][srcX * kernel_pool_size + j]);
-                    }
-                int out_pos = oc * output_pool_size * output_pool_size + srcY * output_pool_size + srcX;
-                if (tmp_max >= 0)
-                {
-
-                    output_pool2[out_pos] = tmp_max;
-                }
-                else
-                {
-                    output_pool2[out_pos] = 0;
-                }
+                output_pool2[out_pos] = tmp_max;
+            }
+            else
+            {
+                output_pool2[out_pos] = 0;
             }
         }
-        __syncthreads();
+    }
+    __syncthreads();
 
     // clock_t end_conv_time = clock();
     // clock_t start_fc_time = clock();
     //------------------------------------------------relu+gemv--------------------------------------------------------------
     //                                                 GEMV
     //------------------------------------------------relu+gemv--------------------------------------------------------------
-    if (t == 9999 && threadIdx.x == 0)
-    {
-        printf("------------------------out 256------------------------:\n");
-        for (int i = 0; i < 256; i++)
-            printf(" %f\n", output_pool2[i]);
-    }
 
-
-#if 1
-        // if (threadIdx.x == 0 && t == 0)
-        //     printf("blockdim x %d y %d z %d gitDim x %d y %d z %d \n",
-        //         blockDim.x, blockDim.y, blockDim.z, gridDim.x, gridDim.y, gridDim.z);
-        int height = 10, width = 256;
-        int warp_id = threadIdx.x / 32;
-        int warp_num = blockDim.x / 32;
-        int tid = threadIdx.x;
-        int thread_warp_id = tid % 32;
-        const int warp_size = 32;
-
-        //warp要取的col的start
-        int col_vec_start = threadIdx.x % 32;
-        // __shared__ Arow_s[width];  
-        float* x_s = output_pool2;
-        __shared__ float out[10];
-
-
-
-        __syncthreads();
-        // if (tid == 0)
-        //     for (int i = 0; i < 256; i++)
-        //         printf("x[%d] = %f\n", i, x_s[i]);
-
-        __syncthreads();
-        for (int row = warp_id; row < height; row += warp_num)
-        {
-            double tmp = 0;
-            //取数据到Arow_s
-            float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start * 2];
-            float4 current_val2 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start * 2 + 1];
-            tmp += current_val1.x * x_s[col_vec_start * 8];
-            tmp += current_val1.y * x_s[col_vec_start * 8 + 1];
-            tmp += current_val1.z * x_s[col_vec_start * 8 + 2];
-            tmp += current_val1.w * x_s[col_vec_start * 8 + 3];
-            tmp += current_val2.x * x_s[col_vec_start * 8 + 4];
-            tmp += current_val2.y * x_s[col_vec_start * 8 + 5];
-            tmp += current_val2.z * x_s[col_vec_start * 8 + 6];
-            tmp += current_val2.w * x_s[col_vec_start * 8 + 7];
-
-            // if (t == 9999)
-            //     printf("tmp0 warpid %d row %d tid %d, col_vec %d, x_s[%d]= %f, output2[%d] = %f,  A x %f, y %f, z %f, w %f, tmp%f\n",
-            //         warp_id, row, tid, col_vec_start, col_vec_start * 8, x_s[col_vec_start * 8], col_vec_start * 8, output_pool2[col_vec_start * 8], current_val1.x, current_val1.y, current_val1.z,
-            //     current_val1.w, tmp);
-            tmp = warpReduceSum<warp_size>(tmp);
-            // if (threadIdx.x == 0) printf("tmp1 %f\n", tmp
-
-            if (tid % 32 == 0)
-            {
-                atomicAdd(&out[row], tmp);
-            }
-
-        }
-#else
 
     int height = 10, width = 256;
     int tid = threadIdx.x;
@@ -791,17 +449,30 @@ for (int row = warp_id / 2; row < height; row += warp_num)
 
 
 
+
+    float tmp = 0;
 #pragma unroll
-    for (int row = warp_id / 2; row < height; row += warp_num)
+    for (int row = warp_id; row < height; row += warp_num)
     {
         out[row] = 0;
-        float tmp = 0;
-        col_vec_start += warp_id % 2 * 32;
+
         float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start];
         tmp += current_val1.x * x_s[col_vec_start * 4];
         tmp += current_val1.y * x_s[col_vec_start * 4 + 1];
         tmp += current_val1.z * x_s[col_vec_start * 4 + 2];
         tmp += current_val1.w * x_s[col_vec_start * 4 + 3];
+
+
+    }
+
+#pragma unroll
+    for (int row = warp_id; row < height; row += warp_num)
+    {
+        float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start + 32];
+        tmp += current_val1.x * x_s[(col_vec_start + 32) * 4];
+        tmp += current_val1.y * x_s[(col_vec_start + 32) * 4 + 1];
+        tmp += current_val1.z * x_s[(col_vec_start + 32) * 4 + 2];
+        tmp += current_val1.w * x_s[(col_vec_start + 32) * 4 + 3];
         tmp = warpReduceSum<warp_size>(tmp);
         // if (t == 0 && row == 0 && warp_id == 0)
         //     printf("warpid %d col_vec_start %d tmp %f\n", warp_id, col_vec_start, tmp);
@@ -813,38 +484,20 @@ for (int row = warp_id / 2; row < height; row += warp_num)
 
     }
     __syncthreads();
-#endif
-    #endif
-    __syncthreads();
-    if (tid == 0)
-        {
-            float tmp_max = -1e9;
-            int    id = 0;
-            for (int i = 0; i < 10; i++)
-            {
-                if (t == 5000)
-                    printf("t = %d th x %d y %d z %d b x %d row %d tmp %f\n",t, threadIdx.x, threadIdx.y, threadIdx.z, blockIdx.x, i, out[i]);
-                if (tmp_max < out[i])
-                {
-                    tmp_max = out[i], id = i;
-                }
-            }
-            if ( t >= 1 && t < 10)
-            {
-                labels[t] = id;
-                atomicAdd(labels, 1);
-            }
-            
-            int acc = (id == flag);
-            // if (acc == 0)
-            //     printf("t = %d id = %d\n", t);
-                atomicAdd(sum, acc);
-        }
-        
 
-        // if (t == 0 && labels[0] == 10)
-        //     for (int i = 0; i < 10; i++)
-        //         printf("lable[%d] = %d\n", labels[i]);
+    if (tid == 0)
+    {
+        float tmp_max = -1e9, id = 0;
+        for (int i = 0; i < 10; i++)
+        {
+            if (tmp_max < out[i])
+            {
+                tmp_max = out[i], id = i;
+            }
+        }
+        int acc = (id == flag);
+        atomicAdd(sum, acc);
+    }
 
 }
 
@@ -960,10 +613,10 @@ int main(int argc, char* argv[]) {
     //--------------------------------开始执行--------------------------------
     for (int t = 0; t < 10000 / set_size; t++) {
         int stream_tid = t % nStreams;
-        dim3 block(20 * 32);
+        dim3 block(10 * 32);
         dim3 grid(set_size);
-        // printf("t == %d\n", t);
-        _lenet_fusion_new<set_size> << < grid, block >> > (d_input,
+
+        _lenet_fusion_new<set_size> << < grid, block, 400, streams[stream_tid] >> > (d_input,
             d_conv1_weight,
             d_conv1_bias,
             d_conv2_weight,
@@ -982,7 +635,7 @@ int main(int argc, char* argv[]) {
     auto end = std::chrono::high_resolution_clock::now();
     cudaMemcpy(sum, d_sum, block_num * sizeof(int), cudaMemcpyDeviceToHost);
     std::chrono::duration<double> diff = end - start;
-    std::cout << std::fixed << std::setprecision(4) << diff.count() << ":" << std::setprecision(4) << (float)sum[0] / (float)10000 << std::endl;
+    std::cout << std::fixed << std::setprecision(6) << diff.count() << ":" << std::setprecision(4) << (float)sum[0] / (float)10000 << std::endl;
 
     // cudaMemcpy(predict, d_predict, sizeof(int) *labels.size(), cudaMemcpyDeviceToHost);
 
