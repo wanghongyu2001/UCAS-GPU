@@ -248,7 +248,7 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
 
     int outputSize = inputSize - kernelSize + 1;
 
-    int destY = threadIdx.x / 14, destX = threadIdx.x % 14;
+    int destY = threadIdx.x / 12, destX = threadIdx.x % 12;
     int srcY = destY, srcX = destX;
     for (int ic = 0; ic < inputChannel; ic++)
     {
@@ -267,10 +267,130 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
             // 1 1
             in_pos = ic * inputSize * inputSize + (destY * 2 + 1) * inputSize + (destX * 2 + 1);
             in_s[ic][destY * 2 + 1][destX * 2 + 1] = input[in_pos];
+            // if (destX == 11 && destY == 11 && t == 0)
+            //     printf("in_s[%d][%d] = %f\n", 22, 22, in_s[0][destY * 2][destX * 2])
+                //取16个数
+            if (destX == 11 && destY == 11)
+            {
+                // 2 2
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 2) * inputSize + (destX * 2 + 2);
+                in_s[ic][(destY * 2 + 2)][destX * 2 + 2] = input[in_pos];
+                // 2 3
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 2) * inputSize + (destX * 2 + 3);
+                in_s[ic][destY * 2 + 2][destX * 2 + 3] = input[in_pos];
+                // 3 2
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 3) * inputSize + (destX * 2 + 2);
+                in_s[ic][destY * 2 + 3][destX * 2 + 2] = input[in_pos];
+                // 3 3
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 3) * inputSize + (destX * 2 + 3);
+                in_s[ic][destY * 2 + 3][destX * 2 + 3] = input[in_pos];
+                // 2 4
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 2) * inputSize + (destX * 2 + 4);
+                in_s[ic][(destY * 2) + 2][destX * 2 + 4] = input[in_pos];
+                // 2 5
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 2) * inputSize + (destX * 2 + 5);
+                in_s[ic][destY * 2 + 2][destX * 2 + 5] = input[in_pos];
+                // 3 4
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 3) * inputSize + (destX * 2 + 4);
+                in_s[ic][destY * 2 + 3][destX * 2 + 4] = input[in_pos];
+                // 3 5
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 3) * inputSize + (destX * 2 + 5);
+                in_s[ic][destY * 2 + 3][destX * 2 + 5] = input[in_pos];
+                // 4 2
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 4) * inputSize + (destX * 2 + 2);
+                in_s[ic][(destY * 2) + 4][destX * 2 + 2] = input[in_pos];
+                // 4 3
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 4) * inputSize + (destX * 2 + 3);
+                in_s[ic][destY * 2 + 4][destX * 2 + 3] = input[in_pos];
+                // 5 2
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 5) * inputSize + (destX * 2 + 2);
+                in_s[ic][destY * 2 + 5][destX * 2 + 2] = input[in_pos];
+                // 5 3
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 5) * inputSize + (destX * 2 + 3);
+                in_s[ic][destY * 2 + 5][destX * 2 + 3] = input[in_pos];
+                // 4 4
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 4) * inputSize + (destX * 2 + 4);
+                in_s[ic][(destY * 2) + 4][destX * 2 + 4] = input[in_pos];
+                // 4 5
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 4) * inputSize + (destX * 2 + 5);
+                in_s[ic][destY * 2 + 4][destX * 2 + 5] = input[in_pos];
+                // 5 4
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 5) * inputSize + (destX * 2 + 4);
+                in_s[ic][destY * 2 + 5][destX * 2 + 4] = input[in_pos];
+                // 5 5
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 5) * inputSize + (destX * 2 + 5);
+                in_s[ic][destY * 2 + 5][destX * 2 + 5] = input[in_pos];
 
+            }
+            if (destX == 11)
+            {
+                // 0 2
+                in_pos = ic * inputSize * inputSize + (destY * 2) * inputSize + (destX * 2 + 2);
+                in_s[ic][(destY * 2)][destX * 2 + 2] = input[in_pos];
+                // 0 3
+                in_pos = ic * inputSize * inputSize + (destY * 2) * inputSize + (destX * 2 + 3);
+                in_s[ic][destY * 2][destX * 2 + 3] = input[in_pos];
+                // 1 2
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 1) * inputSize + (destX * 2 + 2);
+                in_s[ic][destY * 2 + 1][destX * 2 + 2] = input[in_pos];
+                // 1 3
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 1) * inputSize + (destX * 2 + 3);
+                in_s[ic][destY * 2 + 1][destX * 2 + 3] = input[in_pos];
+                // 0 4
+                in_pos = ic * inputSize * inputSize + (destY * 2) * inputSize + (destX * 2 + 4);
+                in_s[ic][(destY * 2)][destX * 2 + 4] = input[in_pos];
+                // 0 5
+                in_pos = ic * inputSize * inputSize + (destY * 2) * inputSize + (destX * 2 + 5);
+                in_s[ic][destY * 2][destX * 2 + 5] = input[in_pos];
+                // 1 4
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 1) * inputSize + (destX * 2 + 4);
+                in_s[ic][destY * 2 + 1][destX * 2 + 4] = input[in_pos];
+                // 1 5
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 1) * inputSize + (destX * 2 + 5);
+                in_s[ic][destY * 2 + 1][destX * 2 + 5] = input[in_pos];
+
+            }
+            if (destY == 11)
+            {
+                // 2 0
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 2) * inputSize + (destX * 2);
+                in_s[ic][(destY * 2) + 2][destX * 2] = input[in_pos];
+                // 2 1
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 2) * inputSize + (destX * 2 + 1);
+                in_s[ic][destY * 2 + 2][destX * 2 + 1] = input[in_pos];
+                // 3 0
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 3) * inputSize + (destX * 2);
+                in_s[ic][destY * 2 + 3][destX * 2] = input[in_pos];
+                // 3 1
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 3) * inputSize + (destX * 2 + 1);
+                in_s[ic][destY * 2 + 3][destX * 2 + 1] = input[in_pos];
+                // 4 0
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 4) * inputSize + (destX * 2);
+                in_s[ic][(destY * 2) + 4][destX * 2] = input[in_pos];
+                // 4 1
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 4) * inputSize + (destX * 2 + 1);
+                in_s[ic][destY * 2 + 4][destX * 2 + 1] = input[in_pos];
+                // 5 0
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 5) * inputSize + (destX * 2);
+                in_s[ic][destY * 2 + 5][destX * 2] = input[in_pos];
+                // 5 1
+                in_pos = ic * inputSize * inputSize + (destY * 2 + 5) * inputSize + (destX * 2 + 1);
+                in_s[ic][destY * 2 + 5][destX * 2 + 1] = input[in_pos];
+
+            }
         }
     }
-    // __syncthreads();
+    __syncthreads();
+    // if (t == 0 && threadIdx.x == 0)
+    // {
+    //     printf("------------------------input 256------------------------:\n");
+    //     for (int i = 0; i < 28; i++)
+    //     {
+    //         for (int j = 0; j < 28; j++)
+    //             if (in_s[0][i][j] != input[i * 28 + j])
+    //             printf("in_s[%d][%d] = %f input[%d][%d] = %f\n", i, j, in_s[0][i][j], i, j, input[i * 28 + j]);
+    //     }
+    // }
     for (int oc = 0; oc < outputChannel; oc++)
     {
 
@@ -432,8 +552,13 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
     //                                                 GEMV
     //------------------------------------------------relu+gemv--------------------------------------------------------------
 
-
-    int height = 10, width = 256;
+    // if (t == 0 && threadIdx.x == 0)
+    // {
+    //     printf("------------------------out 256------------------------:\n");
+    //     for (int i = 0; i < 256; i++)
+    //         printf(" %d\n", output_pool2[i]);
+    // }
+    int  width = 256;
     int tid = threadIdx.x;
     int warp_id = (tid) / 32;
     int thread_warp_id = tid % 32;
@@ -447,7 +572,7 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
     __shared__ float out[10];
 
 
-
+    // if (t == 0 && tid == 0) printf("warnum %d\n", warp_num);
 
     {
         float tmp = 0;
@@ -472,10 +597,33 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
         }
     }
 
-    if (warp_id < 4)
+  
     {
         float tmp1 = 0;
         int row1 = warp_id + warp_num;
+        if (tid % 32 == 0)
+            out[row1] = 0;
+
+        float4 current_val1 = reinterpret_cast<float4*>(A)[row1 * width / 4 + col_vec_start];
+        tmp1 += current_val1.x * x_s[col_vec_start * 4];
+        tmp1 += current_val1.y * x_s[col_vec_start * 4 + 1];
+        tmp1 += current_val1.z * x_s[col_vec_start * 4 + 2];
+        tmp1 += current_val1.w * x_s[col_vec_start * 4 + 3];
+        current_val1 = reinterpret_cast<float4*>(A)[row1 * width / 4 + col_vec_start + 32];
+        tmp1 += current_val1.x * x_s[(col_vec_start + 32) * 4];
+        tmp1 += current_val1.y * x_s[(col_vec_start + 32) * 4 + 1];
+        tmp1 += current_val1.z * x_s[(col_vec_start + 32) * 4 + 2];
+        tmp1 += current_val1.w * x_s[(col_vec_start + 32) * 4 + 3];
+        tmp1 = warpReduceSum<warp_size>(tmp1);
+        if (tid % 32 == 0)
+        {
+            atomicAdd(&out[row1], tmp1);
+        }
+    }
+    if (warp_id < 2)
+    {
+        float tmp1 = 0;
+        int row1 = warp_id + warp_num *2;
         if (tid % 32 == 0)
             out[row1] = 0;
 
@@ -500,6 +648,9 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
 
     if (tid == 0)
     {
+        // if (t == 5000)
+            // for (int i = 0; i < 10; i++)
+            //     printf("row %d tmp %f\n", i, out[i]);
         float tmp_max = -1e9, id = 0;
         for (int i = 0; i < 10; i++)
         {
@@ -517,7 +668,7 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
 int main(int argc, char* argv[]) {
     std::string dir = argv[1];  // 第一个参数是程序所在的目录，这个目录是存放前一步训练模型参数文件的目录，从这个目录下读取模型参数文件，相对于这个目录读取测试集图片和标签
     // cout << dir;
-    int gpuDevice = 1; // 选择第二个 GPU，索引从0开始
+    int gpuDevice = 1;
 
     cudaSetDevice(gpuDevice);
     // 读取测试集，对于想实现CUDA C/C++训练的同学，参考训练集文件名为train-images-idx3-ubyte和train-labels-idx1-ubyte
@@ -627,7 +778,7 @@ int main(int argc, char* argv[]) {
     for (int t = 0; t < 10000 / set_size; t++) {
         int stream_tid = t % nStreams;
         // dim3 block(7 * 32);
-        dim3 block(14 * 14);
+        dim3 block(12 * 12);
         dim3 grid(set_size);
 
         _lenet_fusion_new<set_size> << < grid, block, 400, streams[stream_tid] >> > (d_input,
