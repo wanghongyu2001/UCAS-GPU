@@ -449,36 +449,37 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
 
 
 
-
-    float tmp = 0;
-    int row = warp_id;
-    if (tid % 32 == 0)
-        out[row] = 0;
-
-    float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start];
-    tmp += current_val1.x * x_s[col_vec_start * 4];
-    tmp += current_val1.y * x_s[col_vec_start * 4 + 1];
-    tmp += current_val1.z * x_s[col_vec_start * 4 + 2];
-    tmp += current_val1.w * x_s[col_vec_start * 4 + 3];
-    current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start + 32];
-    tmp += current_val1.x * x_s[(col_vec_start + 32) * 4];
-    tmp += current_val1.y * x_s[(col_vec_start + 32) * 4 + 1];
-    tmp += current_val1.z * x_s[(col_vec_start + 32) * 4 + 2];
-    tmp += current_val1.w * x_s[(col_vec_start + 32) * 4 + 3];
-    tmp = warpReduceSum<warp_size>(tmp);
-    if (tid % 32 == 0)
     {
-        atomicAdd(&out[row], tmp);
+        float tmp = 0;
+        int row = warp_id;
+        if (tid % 32 == 0)
+            out[row] = 0;
+
+        float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start];
+        tmp += current_val1.x * x_s[col_vec_start * 4];
+        tmp += current_val1.y * x_s[col_vec_start * 4 + 1];
+        tmp += current_val1.z * x_s[col_vec_start * 4 + 2];
+        tmp += current_val1.w * x_s[col_vec_start * 4 + 3];
+        current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start + 32];
+        tmp += current_val1.x * x_s[(col_vec_start + 32) * 4];
+        tmp += current_val1.y * x_s[(col_vec_start + 32) * 4 + 1];
+        tmp += current_val1.z * x_s[(col_vec_start + 32) * 4 + 2];
+        tmp += current_val1.w * x_s[(col_vec_start + 32) * 4 + 3];
+        tmp = warpReduceSum<warp_size>(tmp);
+        if (tid % 32 == 0)
+        {
+            atomicAdd(&out[row], tmp);
+        }
     }
 
-    if (warp_id < 3)
+    if (warp_id < 4)
     {
         float tmp1 = 0;
         int row1 = warp_id + warp_num;
         if (tid % 32 == 0)
             out[row1] = 0;
 
-        current_val1 = reinterpret_cast<float4*>(A)[row1 * width / 4 + col_vec_start];
+        float4 current_val1 = reinterpret_cast<float4*>(A)[row1 * width / 4 + col_vec_start];
         tmp1 += current_val1.x * x_s[col_vec_start * 4];
         tmp1 += current_val1.y * x_s[col_vec_start * 4 + 1];
         tmp1 += current_val1.z * x_s[col_vec_start * 4 + 2];
@@ -625,7 +626,8 @@ int main(int argc, char* argv[]) {
     //--------------------------------开始执行--------------------------------
     for (int t = 0; t < 10000 / set_size; t++) {
         int stream_tid = t % nStreams;
-        dim3 block(7 * 32);
+        // dim3 block(7 * 32);
+        dim3 block(14 * 14);
         dim3 grid(set_size);
 
         _lenet_fusion_new<set_size> << < grid, block, 400, streams[stream_tid] >> > (d_input,
