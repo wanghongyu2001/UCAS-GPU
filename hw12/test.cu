@@ -250,7 +250,7 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
         // clock_t start_conv_time = clock();
         input = &input[(t) * 28 * 28];
         int inputChannel, outputChannel, inputSize, kernelSize;
-        inputChannel = 1, outputChannel = 6, inputSize = 28, kernelSize = 5;
+        inputChannel = 1, outputChannel = 3, inputSize = 28, kernelSize = 5;
 
 
         __shared__ float in_s[batch_size][25][25];
@@ -336,7 +336,7 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
 
 
         __syncthreads();
-        int  width = 216;
+        int  width = 108;
         int tid = threadIdx.x;
         int warp_id = (tid) / 32;
         int thread_warp_id = tid % 32;
@@ -351,13 +351,14 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
 
         // if (t == 0 && tid == 0) printf("warnum %d\n", warp_num);
         // 一个warp算两行
+        if (threadIdx.x < 27)
         for (int k = 0; k < 10 && warp_id == 0; k++)
         {
             float tmp[batch_size];
             for (int b = 0; b < batch_size; b++) tmp[b] = 0;
             // int row = warp_id + warp_num * k;
             int row = k;
-            for (int i = 0; i < 1; i++) //少算了 一些数 216 - 32 * 4 = 88
+            for (int i = 0; i < 1; i++) 
             {
                 float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start];
                 for (int b = 0; b < batch_size; b++)
@@ -366,18 +367,6 @@ __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel
                     tmp[b] += current_val1.y * in_pool_s[b][(col_vec_start) * 4 + 1];
                     tmp[b] += current_val1.z * in_pool_s[b][(col_vec_start) * 4 + 2];
                     tmp[b] += current_val1.w * in_pool_s[b][(col_vec_start) * 4 + 3];
-                }
-
-            }
-            if (col_vec_start < 22)
-            {
-                for (int b = 0; b < batch_size; b++)
-                {
-                    float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + 32 * 1 + col_vec_start];
-                    tmp[b] += current_val1.x * in_pool_s[b][(col_vec_start + 32 * 1) * 4];
-                    tmp[b] += current_val1.y * in_pool_s[b][(col_vec_start + 32 * 1) * 4 + 1];
-                    tmp[b] += current_val1.z * in_pool_s[b][(col_vec_start + 32 * 1) * 4 + 2];
-                    tmp[b] += current_val1.w * in_pool_s[b][(col_vec_start + 32 * 1) * 4 + 3];
                 }
             }
 
@@ -473,7 +462,7 @@ int main(int argc, char* argv[]) {
     float* d_conv1_weight, * d_conv1_bias, * d_conv2_weight, * d_conv2_bias;
     int* d_predict, * d_labels;
     int* predict = (int*)malloc(sizeof(int) * labels.size());
-    const int set_size = 10000 / 2
+    const int set_size = 10000 / 1
         ;
     int nStreams = 1;
     cudaStream_t streams[nStreams];
