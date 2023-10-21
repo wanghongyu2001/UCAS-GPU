@@ -235,219 +235,181 @@ __device__ float _tanh(float x)
 
 template<int set_size>
 __global__ void _lenet_fusion_new(float* input, const float* __restrict__ kernel,
-    const float* __restrict__ kernel_bias, const float* __restrict__ kernel2,
-    const float* __restrict__ kernel_bias2,
+    const float* __restrict__ kernel_bias,
     float* __restrict__ A,
     int* labels, int* sum,
     int set_id) //是方形
 {
-    int t = set_id * set_size + blockIdx.x;
-    int flag = labels[t];
-    // clock_t start_conv_time = clock();
-    input = &input[(t) * 28 * 28];
-    int inputChannel, outputChannel, inputSize, kernelSize;
-    inputChannel = 1, outputChannel = 6, inputSize = 28, kernelSize = 5;
 
-
-    __shared__ float in_s[6][28][28];
-    __shared__ float in_pool_s[28][28];
-    __shared__ float ker_s[16][5][5];
-
-    __shared__ float output_pool[6 * 12 * 12];
-    // __shared__ float output_pool2[16 * 4 * 4];
-    // __shared__ float output_pool2[896];
-
-    // int outputSize = inputSize - kernelSize + 1;
-
-    int destY = threadIdx.x / 8, destX = threadIdx.x % 8;
-    int srcY = destY, srcX = destX;
-    for (int ic = 0; ic < 1; ic++)
     {
-        //8 * 8 取 28 * 28 需要取 16次数
-        if (destY < inputSize && destX < inputSize)
+        const int batch_size = 10000 / set_size;
+        int t = blockIdx.x;
+        int flag[batch_size];
+        for (int b = 0; b < batch_size; b++)
+            flag[b] = labels[t + b];
+        // clock_t start_conv_time = clock();
+        input = &input[(t) * 28 * 28];
+        int inputChannel, outputChannel, inputSize, kernelSize;
+        inputChannel = 1, outputChannel = 6, inputSize = 28, kernelSize = 5;
+
+
+        __shared__ float in_s[batch_size][25][25];
+        __shared__ float in_pool_s[batch_size][6 * 6 * 6];
+        __shared__ float ker_s[5][5];
+        int destY = threadIdx.x / 8, destX = threadIdx.x % 8;
+        if (blockDim.x == 32) destY = threadIdx.x / 6, destX = threadIdx.x % 6;
+
+        int srcY = destY, srcX = destX;
+
+
+        for (int b = 0; b < batch_size; b++)
+            if (destY < inputSize / 5 && destX < inputSize / 5)
+            {
+                for (int i = 0; i < 5; i++)
+                    for (int j = 0; j < 5; j++)
+                    {
+                        int in_pos = b * 28 * 28 + (destY * 5 + i) * inputSize + (destX * 5 + j);
+                        in_s[b][(destY * 5 + i)][destX * 5 + j] = input[in_pos];
+                    }
+            }
+
+        for (int oc = 0; oc < outputChannel; oc++)
         {
 
-            for (int i = 0; i < 4; i++)
-                for (int j = 0; j < 4; j++)
-                {
+            float tmp_bias = kernel_bias[oc];
+            float accum[batch_size], accum1[batch_size];
+            for (int b = 0; b < batch_size; b++)
+                accum[b] = 0, accum1[b] = 0;
 
 
-                    int in_pos = ic * inputSize * inputSize + (destY * 4 + i) * inputSize + (destX * 4 + j);
-                    in_s[ic][(destY * 4 + i)][destX * 4 + j] = input[in_pos];
-                }
-        }
-    }
-    // __syncthreads();
-    // if (t == 0 && threadIdx.x == 0)
-    // {
-    //     printf("------------------------input 256------------------------:\n");
-    //     for (int i = 0; i < 28; i++)
-    //     {
-    //         for (int j = 0; j < 28; j++)
-    //             if (in_s[0][i][j] != input[i * 28 + j])
-    //             printf("in_s[%d][%d] = %f input[%d][%d] = %f\n", i, j, in_s[0][i][j], i, j, input[i * 28 + j]);
-    //     }
-    // }
-    for (int oc = 0; oc < outputChannel; oc++)
-    {
-
-        float tmp_bias = kernel_bias[oc];
-        float accum[16];
-        for (int i = 0; i < 16; i++) accum[i] = 0;
-        // __syncthreads(); //奇怪，这个同步不能去
-        for (int ic = 0; ic < inputChannel; ic++)
-        {
             if (destY < kernelSize && destX < kernelSize) // 5 不需要多取
             {
                 int ker_pos = oc * kernelSize * kernelSize * inputChannel +
-                    ic * kernelSize * kernelSize + destY * kernelSize + destX;
-                ker_s[ic][destY][destX] = kernel[ker_pos];
+                    destY * kernelSize + destX;
+                ker_s[destY][destX] = kernel[ker_pos];
             }
 
-
             __syncthreads();
-            //需要计算16次
-            // 计算 00 01 10 11
-            if (srcY < 6 && srcX < 6)
+            if (destY < 4)
             {
-
                 for (int i = 0; i < kernelSize; i++)
                 {
-
                     for (int j = 0; j < kernelSize; j++)
                     {
-                        float ker_tmp = ker_s[ic][i][j];
-#pragma unroll  
-                        for (int k = 0; k < 4; k++)
+
+                        for (int b = 0; b < batch_size; b++)
+                            accum[b] += ker_s[i][j] * in_s[b][srcY * 4 + i][srcX * 4 + j];
+                    }
+                }
+                for (int b = 0; b < batch_size; b++)
+                {
+                    float in_tmp = (accum[b] + tmp_bias);
+                    in_pool_s[b][oc * 6 * 6 + destY * 6 + destX] = in_tmp > 0 ? in_tmp : 0;
+                }
+            }
+            else if (destY == 4)
+            {
+                for (int i = 0; i < kernelSize; i++)
+                {
+                    for (int j = 0; j < kernelSize; j++)
+                    {
+                        for (int b = 0; b < batch_size; b++)
                         {
-                            for (int m = 0; m < 4; m++)
-                                accum[k * 4 + m] += in_s[ic][srcY * 4 + i + k][srcX * 4 + j + m] * ker_tmp;
+                            accum[b] += ker_s[i][j] * in_s[b][srcY * 4 + i][srcX * 4 + j];
+                            accum1[b] += ker_s[i][j] * in_s[b][5 * 4 + i][srcX * 4 + j];
                         }
                     }
                 }
 
+                for (int b = 0; b < batch_size; b++)
+                {
+                    in_pool_s[b][oc * 6 * 6 + destY * 6 + destX] = (accum[b] + tmp_bias) > 0 ? (accum[b] + tmp_bias) : 0;
+                    in_pool_s[b][oc * 6 * 6 + (destY + 1) * 6 + destX] = (accum1[b] + tmp_bias) > 0 ? (accum1[b] + tmp_bias) : 0;
+                }
             }
+            // __syncthreads();
         }
 
-        // __syncthreads();
-        // 00 outsize 24
-        if (destY < 6 && destX < 6)
-        {
-            for (int i = 0; i < 4; i++)
-                for (int j = 0; j < 4; j++)
-                    in_pool_s[destY * 4 + i][destX * 4 + j] = accum[i * 4 + j] + tmp_bias;
-        }
+        //------------------------------------------------relu+gemv--------------------------------------------------------------
+        //                                                 GEMV
+        //------------------------------------------------relu+gemv--------------------------------------------------------------
+
 
         __syncthreads();
-        // if (t == 0 && threadIdx.x == 0)
-        // {
-        //     for (int i = 0; i < 24; i ++ )
-        //         for (int j = 0; j < 24; j ++ )
-        //             printf("in_pool_s[%d][%d] = %f\n",i, j, in_pool_s[i][j] );
-        // }
-        // int output_pool_size = outputSize / 2;
-        int kernel_pool_size = 2;
-        if (srcY < 6 && srcX < 6)
+        int  width = 216;
+        int tid = threadIdx.x;
+        int warp_id = (tid) / 32;
+        int thread_warp_id = tid % 32;
+        int warp_num = (blockDim.x * blockDim.y) / 32;
+        const int warp_size = 32;
+
+        //warp要取的col的start
+        int col_vec_start = thread_warp_id;
+        // __shared__ Arow_s[width];  
+        __shared__ float out[batch_size][10];
+
+
+        // if (t == 0 && tid == 0) printf("warnum %d\n", warp_num);
+        // 一个warp算两行
+        for (int k = 0; k < 10 && warp_id == 0; k++)
         {
-            float tmp_max[4] = { -1e9, -1e9, -1e9, -1e9 };
-            for (int i = 0; i < kernel_pool_size; i++)
-#pragma unroll
-                for (int j = 0; j < kernel_pool_size; j++)
-                {
-                    for (int k = 0; k < 2; k++)
-                        for (int m = 0; m < 2; m++)
-                            tmp_max[k * 2 + m] = max(tmp_max[k * 2 + m],
-                                in_pool_s[srcY * 4 + k * 2 + i][srcX * 4 + m * 2 + j]);
-                }
-            // output_pool[oc][srcY * 2][srcX * 2] = tmp_max[0] >= 0 ? tmp_max[0] : 0;
-            // output_pool[oc][srcY * 2][srcX * 2 + 1] = tmp_max[1] >= 0 ? tmp_max[1] : 0;
-            // output_pool[oc][srcY * 2 + 1][srcX * 2] = tmp_max[2] >= 0 ? tmp_max[2] : 0;
-            // output_pool[oc][srcY * 2 + 1][srcX * 2 + 1] = tmp_max[3] >= 0 ? tmp_max[3] : 0;
-            output_pool[oc * 12 * 12 + (srcY * 2) * 12 + srcX * 2] = tmp_max[0] >= 0 ? tmp_max[0] : 0;
-            output_pool[oc * 12 * 12 + (srcY * 2) * 12 + srcX * 2 + 1] = tmp_max[1] >= 0 ? tmp_max[1] : 0;
-            output_pool[oc * 12 * 12 + (srcY * 2 + 1) * 12 + srcX * 2] = tmp_max[2] >= 0 ? tmp_max[2] : 0;
-            output_pool[oc * 12 * 12 + (srcY * 2 + 1) * 12 + srcX * 2 + 1] = tmp_max[3] >= 0 ? tmp_max[3] : 0;
-
-        }
-    }
-
-    //------------------------------------------------relu+gemv--------------------------------------------------------------
-    //                                                 GEMV
-    //------------------------------------------------relu+gemv--------------------------------------------------------------
-
-    // if (t == 0 && threadIdx.x == 0)
-    // {
-    //     printf("------------------------out 256------------------------:\n");
-    //     for (int i = 0; i < 256; i++)
-    //         printf(" %d\n", output_pool2[i]);
-    // }
-    int  width = 864;
-    int tid = threadIdx.x;
-    int warp_id = (tid) / 32;
-    int thread_warp_id = tid % 32;
-    int warp_num = (blockDim.x * blockDim.y) / 32;
-    const int warp_size = 32;
-
-    //warp要取的col的start
-    int col_vec_start = thread_warp_id;
-    // __shared__ Arow_s[width];  
-    float* x_s = output_pool; //864c/
-    __shared__ float out[10];
-
-
-    // if (t == 0 && tid == 0) printf("warnum %d\n", warp_num);
-    for (int k = 0; k < 5; k++)
-    {
-        float tmp = 0;
-        int row = warp_id + warp_num * k;
-        for (int i = 0; i < 6; i++) //少算了 一些数 864 - 32 * 6
-        {
-            float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + 32 * i + col_vec_start];
-            tmp += current_val1.x * x_s[(col_vec_start + 32 * i) * 4];
-            tmp += current_val1.y * x_s[(col_vec_start + 32 * i) * 4 + 1];
-            tmp += current_val1.z * x_s[(col_vec_start + 32 * i) * 4 + 2];
-            tmp += current_val1.w * x_s[(col_vec_start + 32 * i) * 4 + 3];
-        }
-        if (col_vec_start < 24)
-        {
-            float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + 32 * 6 + col_vec_start];
-            tmp += current_val1.x * x_s[(col_vec_start + 32 * 6) * 4];
-            tmp += current_val1.y * x_s[(col_vec_start + 32 * 6) * 4 + 1];
-            tmp += current_val1.z * x_s[(col_vec_start + 32 * 6) * 4 + 2];
-            tmp += current_val1.w * x_s[(col_vec_start + 32 * 6) * 4 + 3];
-        }
-        // for (int i = 0; i < 3; i++)
-        // {
-        //     tmp += A[row * width + 768 + col_vec_start * 3 + i] * x_s[768 + col_vec_start * 3 + i];
-        // }
-
-        tmp = warpReduceSum<warp_size>(tmp);
-        if (tid % 32 == 0)
-        {
-            out[row] = tmp;
-        }
-    }
-
-    __syncthreads();
-
-    if (tid == 0)
-    {
-        // if (t == 5000)
-        //     for (int i = 0; i < 10; i++)
-        //         printf("row %d tmp %f\n", i, out[i]);
-        float tmp_max = -1e9;
-        int    id = 0;
-        for (int i = 0; i < 10; i++)
-        {
-            if (tmp_max < out[i])
+            float tmp[batch_size];
+            for (int b = 0; b < batch_size; b++) tmp[b] = 0;
+            // int row = warp_id + warp_num * k;
+            int row = k;
+            for (int i = 0; i < 1; i++) //少算了 一些数 216 - 32 * 4 = 88
             {
-                tmp_max = out[i], id = i;
+                float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + col_vec_start];
+                for (int b = 0; b < batch_size; b++)
+                {
+                    tmp[b] += current_val1.x * in_pool_s[b][(col_vec_start) * 4];
+                    tmp[b] += current_val1.y * in_pool_s[b][(col_vec_start) * 4 + 1];
+                    tmp[b] += current_val1.z * in_pool_s[b][(col_vec_start) * 4 + 2];
+                    tmp[b] += current_val1.w * in_pool_s[b][(col_vec_start) * 4 + 3];
+                }
+
+            }
+            if (col_vec_start < 22)
+            {
+                for (int b = 0; b < batch_size; b++)
+                {
+                    float4 current_val1 = reinterpret_cast<float4*>(A)[row * width / 4 + 32 * 1 + col_vec_start];
+                    tmp[b] += current_val1.x * in_pool_s[b][(col_vec_start + 32 * 1) * 4];
+                    tmp[b] += current_val1.y * in_pool_s[b][(col_vec_start + 32 * 1) * 4 + 1];
+                    tmp[b] += current_val1.z * in_pool_s[b][(col_vec_start + 32 * 1) * 4 + 2];
+                    tmp[b] += current_val1.w * in_pool_s[b][(col_vec_start + 32 * 1) * 4 + 3];
+                }
+            }
+
+            for (int b = 0; b < batch_size; b++) tmp[b] = warpReduceSum<warp_size>(tmp[b]);
+            if (tid % 32 == 0)
+            {
+                for (int b = 0; b < batch_size; b++)
+                    out[b][row] = tmp[b];
             }
         }
-        int acc = (id == flag);
-        atomicAdd(sum, acc);
-    }
 
+
+        if (tid < batch_size)
+        {
+            int b = tid;
+            {
+                float tmp_max = -1e9;
+                int    id = 0;
+                for (int i = 0; i < 10; i++)
+                {
+                    if (tmp_max < out[b][i])
+                    {
+                        tmp_max = out[b][i], id = i;
+                    }
+                }
+
+                int acc = (id == flag[b]);
+
+                atomicAdd(sum, acc);
+            }
+        }
+    }
 }
 
 int main(int argc, char* argv[]) {
@@ -511,7 +473,8 @@ int main(int argc, char* argv[]) {
     float* d_conv1_weight, * d_conv1_bias, * d_conv2_weight, * d_conv2_bias;
     int* d_predict, * d_labels;
     int* predict = (int*)malloc(sizeof(int) * labels.size());
-    const int set_size = 10000 / 1;
+    const int set_size = 10000 / 2
+        ;
     int nStreams = 1;
     cudaStream_t streams[nStreams];
     for (int i = 0; i < nStreams; i++) {
@@ -557,35 +520,36 @@ int main(int argc, char* argv[]) {
     dim3 Block(THREAD_PER_BLOCK, 1);
 
 
-    auto start = std::chrono::high_resolution_clock::now();
+
     // 开始计时，使用chrono计时，不支持其它计时方式
     //--------------------------------开始执行--------------------------------
-    for (int t = 0; t < 10000 / set_size; t++) {
-        int stream_tid = t % nStreams;
-        // dim3 block(7 * 32);
-        dim3 block(8 * 8);
-        dim3 grid(set_size);
+    int t = 0;
+    int stream_tid = t % nStreams;
+    // dim3 block(7 * 32);
+    dim3 block(32);
+    // dim3 grid(set_size);
+    // set_size = 5000;
+    dim3 grid(set_size);
+    // printf("set_size %d\n", set_size);
+    auto start = std::chrono::high_resolution_clock::now();
+    _lenet_fusion_new<set_size> << < grid, block >> > (d_input,
+        d_conv1_weight,
+        d_conv1_bias,
+        d_fc4_weight,
+        d_labels,
+        d_sum,
+        t);
 
-        _lenet_fusion_new<set_size> << < grid, block, 400, streams[stream_tid] >> > (d_input,
-            d_conv1_weight,
-            d_conv1_bias,
-            d_conv2_weight,
-            d_conv2_bias,
-            d_fc4_weight,
-            d_labels,
-            d_sum,
-            t);
 
+    // std::cout << "real: " << labels[t]<< ", predict : "<<  maxT(output5) << std::endl;
 
-        // std::cout << "real: " << labels[t]<< ", predict : "<<  maxT(output5) << std::endl;
-    }
 
     cudaDeviceSynchronize();
     cudaMemcpy(sum, d_sum, block_num * sizeof(int), cudaMemcpyDeviceToHost);
     //--------------------------------执行结束--------------------------------
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> diff = end - start;
-    std::cout << std::fixed << std::setprecision(4) << diff.count() << ":" << std::setprecision(4) << (float)sum[0] / (float)10000 << std::endl;
+    std::cout << std::fixed << std::setprecision(6) << diff.count() << ":" << std::setprecision(4) << (float)sum[0] / (float)10000 << std::endl;
 
     // cudaMemcpy(predict, d_predict, sizeof(int) *labels.size(), cudaMemcpyDeviceToHost);
 
