@@ -550,10 +550,11 @@ int main(int argc, char* argv[]) {
     int NUM_PER_BLOCK = 2 * 256;
     // printf("N %d\n", N);
     int block_num = (N + NUM_PER_BLOCK - 1) / NUM_PER_BLOCK;
-    int* d_sum, * sum = (int*)malloc(sizeof(int) * block_num);
+    int* d_sum, * just_for_warmup, * sum = (int*)malloc(sizeof(int) * block_num);
 
     // printf("N %d. block_num %d\n", N, block_num);
     cudaMalloc(&d_sum, block_num * sizeof(int));
+    cudaMalloc(&just_for_warmup, block_num * sizeof(int));
 
     dim3 Grid(block_num, 1);
     dim3 Block(THREAD_PER_BLOCK, 1);
@@ -571,6 +572,18 @@ int main(int argc, char* argv[]) {
     dim3 grid(set_size);
     // printf("set_size %d\n", set_size);
 
+
+    //仅仅就是warmup，计算的结果放在了just_for_warmup的临时变量里。和后面的计算没关系，统计的时间更接近这个nsight的prof的时间
+    _lenet_fusion_new<set_size> << < grid, block >> > (d_input, \
+        d_conv1_weight, \
+        d_conv1_bias, \
+        d_fc4_weight, \
+        d_labels, \
+        just_for_warmup, \
+        t);
+    cudaDeviceSynchronize();
+
+    //--------------------------------开始执行--------------------------------
     auto start = std::chrono::high_resolution_clock::now();
 
     _lenet_fusion_new<set_size> << < grid, block >> > (d_input, \
@@ -581,11 +594,11 @@ int main(int argc, char* argv[]) {
         d_sum, \
         t);
 
-    //--------------------------------执行结束--------------------------------
 
     cudaMemcpy(sum, d_sum, block_num * sizeof(int), cudaMemcpyDeviceToHost);
     cudaDeviceSynchronize();
     auto end = std::chrono::high_resolution_clock::now();
+    //--------------------------------执行结束--------------------------------
     std::chrono::duration<double> diff = end - start;
     std::cout << std::fixed << std::setprecision(6) << diff.count() << ":" << std::setprecision(4) << (float)sum[0] / (float)10000 << std::endl;
 
